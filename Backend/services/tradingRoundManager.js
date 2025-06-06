@@ -282,119 +282,148 @@ class TradingRoundManager extends EventEmitter {
 
   // Process buy/sell signals
   async processSignal(roundId, walletAddress, token, signal, marketData) {
-    const participantKey = `round:${roundId}:participant:${walletAddress}`;
-    const participantData = await redisService.get(participantKey);
-    const participant = JSON.parse(participantData);
-    
-    const signalType = signal.signal?.toUpperCase();
-    const price = marketData.price;
-    const confidence = signal.confidence || 5;
-    
-    // Log signal
-    const logEntry = {
-      timestamp: new Date().toISOString(),
-      token,
-      signal: signalType,
-      price,
-      confidence,
-      reason: signal.reason || 'AI analysis',
-      executed: false
-    };
+    try {
+      const participantKey = `round:${roundId}:participant:${walletAddress}`;
+      const participantData = await redisService.get(participantKey);
+      
+      if (!participantData) {
+        console.error(`Participant not found: ${walletAddress}`);
+        return;
+      }
+      
+      const participant = JSON.parse(participantData);
+      
+      // Add roundId to participant for trade execution
+      participant.roundId = roundId;
+      
+      const signalType = signal.signal?.toUpperCase();
+      const price = marketData.price;
+      const confidence = signal.confidence || 5;
+      
+      // Log signal
+      const logEntry = {
+        timestamp: new Date().toISOString(),
+        token,
+        signal: signalType,
+        price,
+        confidence,
+        reason: signal.reason || 'AI analysis',
+        executed: false
+      };
 
-    // Execute trade
-    if (signalType === 'BUY') {
-      const success = await this.executeBuyOrder(participant, token, price, confidence, signal);
-      logEntry.executed = success;
-    } else if (signalType === 'SELL') {
-      const success = await this.executeSellOrder(participant, token, price, signal);
-      logEntry.executed = success;
+      // Execute trade based on signal
+      if (signalType === 'BUY') {
+        const success = await this.executeBuyOrder(participant, token, price, confidence, signal);
+        logEntry.executed = success;
+      } else if (signalType === 'SELL') {
+        const success = await this.executeSellOrder(participant, token, price, signal);
+        logEntry.executed = success;
+      }
+
+      // Store updated participant
+      await redisService.set(participantKey, JSON.stringify(participant));
+      
+      // Store trade log
+      await redisService.hSet(`round:${roundId}:logs:${walletAddress}`, 
+                             Date.now().toString(), 
+                             JSON.stringify(logEntry));
+                             
+    } catch (error) {
+      console.error(`Process signal error for ${walletAddress}:`, error);
     }
-
-    // Store updated participant
-    await redisService.set(participantKey, JSON.stringify(participant));
-    
-    // Store trade log
-    await redisService.hSet(`round:${roundId}:logs:${walletAddress}`, 
-                           Date.now().toString(), 
-                           JSON.stringify(logEntry));
   }
 
   // Execute buy order
   async executeBuyOrder(participant, token, price, confidence, signal) {
-    const roundData = await redisService.get(`round:${participant.roundId}`);
-    const round = JSON.parse(roundData);
-    
-    // Calculate position size based on confidence
-    const maxPositionValue = participant.portfolio.cash * round.settings.maxPositionSize;
-    const confidenceMultiplier = Math.min(confidence / 10, 1);
-    const positionValue = maxPositionValue * confidenceMultiplier;
-    
-    if (positionValue < participant.portfolio.cash * 0.05) { // Minimum 5%
+    try {
+      // Get round data to access settings
+      const roundData = await redisService.get(`round:${participant.roundId || 'unknown'}`);
+      let round = { settings: { maxPositionSize: 0.3, tradingFee: 0.001 } }; // Default settings
+      
+      if (roundData) {
+        round = JSON.parse(roundData);
+      }
+      
+      // Calculate position size based on confidence
+      const maxPositionValue = participant.portfolio.cash * round.settings.maxPositionSize;
+      const confidenceMultiplier = Math.min(confidence / 10, 1);
+      const positionValue = maxPositionValue * confidenceMultiplier;
+      
+      if (positionValue < participant.portfolio.cash * 0.05) { // Minimum 5%
+        return false;
+      }
+
+      const fee = positionValue * round.settings.tradingFee;
+      const totalCost = positionValue + fee;
+      
+      if (totalCost > participant.portfolio.cash) {
+        return false;
+      }
+
+      const amount = positionValue / price;
+      
+      // Update portfolio
+      participant.portfolio.cash -= totalCost;
+      
+      if (!participant.portfolio.positions[token]) {
+        participant.portfolio.positions[token] = {
+          amount: 0,
+          avgPrice: 0,
+          totalInvested: 0
+        };
+      }
+      
+      const position = participant.portfolio.positions[token];
+      const newAmount = position.amount + amount;
+      const newInvested = position.totalInvested + positionValue;
+      
+      position.avgPrice = newInvested / newAmount;
+      position.amount = newAmount;
+      position.totalInvested = newInvested;
+      
+      participant.portfolio.trades++;
+      
+      return true;
+    } catch (error) {
+      console.error('Buy order execution error:', error);
       return false;
     }
-
-    const fee = positionValue * round.settings.tradingFee;
-    const totalCost = positionValue + fee;
-    
-    if (totalCost > participant.portfolio.cash) {
-      return false;
-    }
-
-    const amount = positionValue / price;
-    
-    // Update portfolio
-    participant.portfolio.cash -= totalCost;
-    
-    if (!participant.portfolio.positions[token]) {
-      participant.portfolio.positions[token] = {
-        amount: 0,
-        avgPrice: 0,
-        totalInvested: 0
-      };
-    }
-    
-    const position = participant.portfolio.positions[token];
-    const newAmount = position.amount + amount;
-    const newInvested = position.totalInvested + positionValue;
-    
-    position.avgPrice = newInvested / newAmount;
-    position.amount = newAmount;
-    position.totalInvested = newInvested;
-    
-    participant.portfolio.trades++;
-    
-    return true;
   }
 
   // Execute sell order
   async executeSellOrder(participant, token, price, signal) {
-    const position = participant.portfolio.positions[token];
-    if (!position || position.amount <= 0) {
+    try {
+      const position = participant.portfolio.positions[token];
+      if (!position || position.amount <= 0) {
+        return false;
+      }
+
+      // Sell entire position
+      const saleValue = position.amount * price;
+      const fee = saleValue * 0.001; // Trading fee
+      const netProceeds = saleValue - fee;
+      
+      // Calculate P&L
+      const pnl = netProceeds - position.totalInvested;
+      
+      // Update portfolio
+      participant.portfolio.cash += netProceeds;
+      
+      if (pnl > 0) {
+        participant.portfolio.wins++;
+      } else {
+        participant.portfolio.losses++;
+      }
+      
+      // Remove position
+      delete participant.portfolio.positions[token];
+      participant.portfolio.trades++;
+      
+      return true;
+    } catch (error) {
+      console.error('Sell order execution error:', error);
       return false;
     }
-
-    // Sell entire position
-    const saleValue = position.amount * price;
-    const fee = saleValue * 0.001; // Trading fee
-    const netProceeds = saleValue - fee;
-    
-    // Calculate P&L
-    const pnl = netProceeds - position.totalInvested;
-    
-    // Update portfolio
-    participant.portfolio.cash += netProceeds;
-    
-    if (pnl > 0) {
-      participant.portfolio.wins++;
-    } else {
-      participant.portfolio.losses++;
-    }
-    
-    // Remove position
-    delete participant.portfolio.positions[token];
-    participant.portfolio.trades++;
-    
-    return true;
   }
 
   // Update portfolio value
@@ -489,30 +518,69 @@ class TradingRoundManager extends EventEmitter {
 
   // Get round leaderboard
   async getLeaderboard(roundId, limit = 10) {
-    const leaderboardData = await redisService.zRevRange(`round:${roundId}:leaderboard`, 0, limit - 1);
-    
-    const leaderboard = [];
-    for (let i = 0; i < leaderboardData.length; i += 2) {
-      const address = leaderboardData[i];
-      const score = parseFloat(leaderboardData[i + 1]);
+    try {
+      // Try Redis sorted set first
+      const leaderboardData = await redisService.zRevRange(`round:${roundId}:leaderboard`, 0, limit - 1);
       
-      const participantData = await redisService.get(`round:${roundId}:participant:${address}`);
-      if (participantData) {
-        const participant = JSON.parse(participantData);
-        leaderboard.push({
-          rank: Math.floor(i / 2) + 1,
-          walletAddress: address,
-          username: participant.username,
-          pnl: participant.portfolio.pnl,
-          pnlPercentage: score,
-          totalValue: participant.portfolio.totalValue,
-          trades: participant.portfolio.trades,
-          winRate: participant.portfolio.winRate
+      const leaderboard = [];
+      
+      // Handle different Redis response formats
+      if (Array.isArray(leaderboardData) && leaderboardData.length > 0) {
+        for (let i = 0; i < leaderboardData.length; i += 2) {
+          const address = leaderboardData[i];
+          const score = parseFloat(leaderboardData[i + 1] || 0);
+          
+          if (address) {
+            const participantData = await redisService.get(`round:${roundId}:participant:${address}`);
+            if (participantData) {
+              const participant = JSON.parse(participantData);
+              leaderboard.push({
+                rank: Math.floor(i / 2) + 1,
+                walletAddress: address,
+                username: participant.username,
+                pnl: participant.portfolio.pnl || 0,
+                pnlPercentage: score,
+                totalValue: participant.portfolio.totalValue || 0,
+                trades: participant.portfolio.trades || 0,
+                winRate: participant.portfolio.winRate || 0
+              });
+            }
+          }
+        }
+      } else {
+        // Fallback: manually build leaderboard from participants
+        console.log('Using fallback leaderboard method...');
+        const participantAddresses = await redisService.sMembers(`round:${roundId}:participants`);
+        
+        for (const address of participantAddresses) {
+          const participantData = await redisService.get(`round:${roundId}:participant:${address}`);
+          if (participantData) {
+            const participant = JSON.parse(participantData);
+            leaderboard.push({
+              rank: 0, // Will be set after sorting
+              walletAddress: address,
+              username: participant.username,
+              pnl: participant.portfolio.pnl || 0,
+              pnlPercentage: participant.portfolio.pnlPercentage || 0,
+              totalValue: participant.portfolio.totalValue || 0,
+              trades: participant.portfolio.trades || 0,
+              winRate: participant.portfolio.winRate || 0
+            });
+          }
+        }
+        
+        // Sort by PnL percentage and assign ranks
+        leaderboard.sort((a, b) => b.pnlPercentage - a.pnlPercentage);
+        leaderboard.forEach((entry, index) => {
+          entry.rank = index + 1;
         });
       }
+      
+      return leaderboard.slice(0, limit);
+    } catch (error) {
+      console.error(`Leaderboard error for round ${roundId}:`, error);
+      return [];
     }
-    
-    return leaderboard;
   }
 
   // Get participant logs
@@ -529,14 +597,18 @@ class TradingRoundManager extends EventEmitter {
 
   // Broadcast round updates
   async broadcastRoundUpdate(roundId) {
-    const leaderboard = await this.getLeaderboard(roundId);
-    
-    await redisService.publish(`round:${roundId}:updates`, {
-      type: 'leaderboard_update',
-      roundId,
-      leaderboard,
-      timestamp: new Date().toISOString()
-    });
+    try {
+      const leaderboard = await this.getLeaderboard(roundId);
+      
+      await redisService.publish(`round:${roundId}:updates`, {
+        type: 'leaderboard_update',
+        roundId,
+        leaderboard,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      console.error(`Broadcast error for round ${roundId}:`, error);
+    }
   }
 
   // Utility methods

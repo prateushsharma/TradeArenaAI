@@ -37,12 +37,22 @@ class RedisService {
       console.log('✅ Redis service connected successfully');
       
       // Setup error handlers
-      this.client.on('error', (err) => console.error('Redis Client Error:', err));
-      this.subscriber.on('error', (err) => console.error('Redis Subscriber Error:', err));
-      this.publisher.on('error', (err) => console.error('Redis Publisher Error:', err));
+      this.client.on('error', (err) => {
+        console.error('Redis Client Error:', err);
+        this.isConnected = false;
+      });
+      
+      this.subscriber.on('error', (err) => {
+        console.error('Redis Subscriber Error:', err);
+      });
+      
+      this.publisher.on('error', (err) => {
+        console.error('Redis Publisher Error:', err);
+      });
 
     } catch (error) {
       console.error('❌ Redis connection failed:', error);
+      this.isConnected = false;
       throw error;
     }
   }
@@ -59,12 +69,14 @@ class RedisService {
     }
   }
 
-  // Generic Redis operations
+  // Generic Redis operations with safety checks
   async get(key) {
+    if (!this.isConnected) throw new Error('Redis not connected');
     return await this.client.get(key);
   }
 
   async set(key, value, options = {}) {
+    if (!this.isConnected) throw new Error('Redis not connected');
     if (options.ttl) {
       return await this.client.setEx(key, options.ttl, value);
     }
@@ -72,59 +84,110 @@ class RedisService {
   }
 
   async del(key) {
+    if (!this.isConnected) throw new Error('Redis not connected');
     return await this.client.del(key);
   }
 
   async exists(key) {
+    if (!this.isConnected) throw new Error('Redis not connected');
     return await this.client.exists(key);
   }
 
   async hSet(key, field, value) {
+    if (!this.isConnected) throw new Error('Redis not connected');
     return await this.client.hSet(key, field, value);
   }
 
   async hGet(key, field) {
+    if (!this.isConnected) throw new Error('Redis not connected');
     return await this.client.hGet(key, field);
   }
 
   async hGetAll(key) {
+    if (!this.isConnected) throw new Error('Redis not connected');
     return await this.client.hGetAll(key);
   }
 
   async hDel(key, field) {
+    if (!this.isConnected) throw new Error('Redis not connected');
     return await this.client.hDel(key, field);
   }
 
   async sAdd(key, member) {
+    if (!this.isConnected) throw new Error('Redis not connected');
     return await this.client.sAdd(key, member);
   }
 
   async sRem(key, member) {
+    if (!this.isConnected) throw new Error('Redis not connected');
     return await this.client.sRem(key, member);
   }
 
   async sMembers(key) {
+    if (!this.isConnected) throw new Error('Redis not connected');
     return await this.client.sMembers(key);
   }
 
   async zAdd(key, score, member) {
+    if (!this.isConnected) throw new Error('Redis not connected');
     return await this.client.zAdd(key, { score, value: member });
   }
 
   async zRangeByScore(key, min, max) {
+    if (!this.isConnected) throw new Error('Redis not connected');
     return await this.client.zRangeByScore(key, min, max);
   }
 
   async zRevRange(key, start, stop) {
-    return await this.client.zRevRange(key, start, stop, { WITHSCORES: true });
+    if (!this.isConnected) throw new Error('Redis not connected');
+    try {
+      // Try newer Redis client method first
+      if (this.client.zRevRange) {
+        return await this.client.zRevRange(key, start, stop, { WITHSCORES: true });
+      }
+      
+      // Try older method names
+      if (this.client.ZREVRANGE) {
+        return await this.client.ZREVRANGE(key, start, stop, 'WITHSCORES');
+      }
+      
+      // Manual command approach
+      const result = await this.client.sendCommand(['ZREVRANGE', key, start.toString(), stop.toString(), 'WITHSCORES']);
+      return result;
+      
+    } catch (error) {
+      console.error('Redis zRevRange error:', error.message);
+      console.log('Attempting alternative Redis zRevRange method...');
+      
+      try {
+        // Last resort - use eval command
+        const script = `
+          local result = redis.call('ZREVRANGE', KEYS[1], ARGV[1], ARGV[2], 'WITHSCORES')
+          return result
+        `;
+        return await this.client.eval(script, 1, key, start.toString(), stop.toString());
+      } catch (evalError) {
+        console.error('All Redis zRevRange methods failed:', evalError.message);
+        return [];
+      }
+    }
   }
 
   // Pub/Sub operations
   async publish(channel, message) {
+    if (!this.isConnected || !this.publisher) {
+      console.warn('Redis publisher not available');
+      return;
+    }
     return await this.publisher.publish(channel, JSON.stringify(message));
   }
 
   async subscribe(channel, callback) {
+    if (!this.isConnected || !this.subscriber) {
+      console.warn('Redis not connected, skipping subscription');
+      return;
+    }
+    
     await this.subscriber.subscribe(channel, (message) => {
       try {
         const data = JSON.parse(message);
@@ -140,31 +203,40 @@ class RedisService {
     return await this.subscriber.unsubscribe(channel);
   }
 
-  // Advanced operations
   async incr(key) {
+    if (!this.isConnected) throw new Error('Redis not connected');
     return await this.client.incr(key);
   }
 
   async expire(key, seconds) {
+    if (!this.isConnected) throw new Error('Redis not connected');
     return await this.client.expire(key, seconds);
   }
 
   async ttl(key) {
+    if (!this.isConnected) throw new Error('Redis not connected');
     return await this.client.ttl(key);
   }
 
   async keys(pattern) {
+    if (!this.isConnected) throw new Error('Redis not connected');
     return await this.client.keys(pattern);
   }
 
   // Batch operations
   async multi() {
+    if (!this.isConnected) throw new Error('Redis not connected');
     return this.client.multi();
   }
 
   // Health check
   async ping() {
-    return await this.client.ping();
+    if (!this.isConnected) return 'DISCONNECTED';
+    try {
+      return await this.client.ping();
+    } catch (error) {
+      return 'ERROR';
+    }
   }
 }
 

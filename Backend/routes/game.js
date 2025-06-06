@@ -334,4 +334,71 @@ router.get('/round/:roundId/participants', async (req, res) => {
   }
 });
 
+// Check if wallet can join round
+router.get('/round/:roundId/can-join/:walletAddress', async (req, res) => {
+  try {
+    const { roundId, walletAddress } = req.params;
+    
+    // Check if round exists
+    const round = await tradingRoundManager.getRound(roundId);
+    if (!round) {
+      return res.json({
+        success: false,
+        canJoin: false,
+        reason: 'Round not found'
+      });
+    }
+    
+    // Check round status
+    if (round.status !== 'waiting') {
+      return res.json({
+        success: false,
+        canJoin: false,
+        reason: `Round is ${round.status}`
+      });
+    }
+    
+    // Check if wallet already joined
+    const participantKey = `round:${roundId}:participant:${walletAddress}`;
+    const existingParticipant = await redisService.get(participantKey);
+    if (existingParticipant) {
+      return res.json({
+        success: false,
+        canJoin: false,
+        reason: 'Wallet already joined this round'
+      });
+    }
+    
+    // Check if round is full
+    const participantAddresses = await redisService.sMembers(`round:${roundId}:participants`);
+    if (participantAddresses.length >= round.maxParticipants) {
+      return res.json({
+        success: false,
+        canJoin: false,
+        reason: 'Round is full'
+      });
+    }
+    
+    res.json({
+      success: true,
+      canJoin: true,
+      round: {
+        id: round.id,
+        title: round.title,
+        currentParticipants: participantAddresses.length,
+        maxParticipants: round.maxParticipants,
+        status: round.status
+      }
+    });
+    
+  } catch (error) {
+    console.error('Can join check error:', error);
+    res.status(500).json({
+      success: false,
+      canJoin: false,
+      error: 'Failed to check join eligibility'
+    });
+  }
+});
+
 module.exports = router;
