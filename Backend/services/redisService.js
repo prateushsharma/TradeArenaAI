@@ -19,8 +19,8 @@ class RedisService {
       return {
         url: process.env.REDIS_URL,
         socket: {
-          tls: process.env.REDIS_TLS === 'true' || process.env.NODE_ENV === 'production',
-          rejectUnauthorized: false
+          tls: false, // Upstash regular Redis doesn't need TLS
+        rejectUnauthorized: false
         }
       };
     }
