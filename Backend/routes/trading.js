@@ -1,8 +1,28 @@
-// routes/trading.js - Trading API routes
+// routes/trading.js - All endpoints converted to POST
 const express = require('express');
 const router = express.Router();
 const groqService = require('../services/groqService');
 const baseTokensService = require('../services/baseTokensService');
+
+// Test Groq connection
+router.post('/test-groq', async (req, res) => {
+  try {
+    const testStrategy = "Buy when RSI is below 30 and sell when above 70";
+    const result = await groqService.parseStrategy(testStrategy);
+    
+    res.json({
+      success: true,
+      message: 'Groq connection working',
+      test_result: result
+    });
+    
+  } catch (error) {
+    res.status(500).json({ 
+      error: 'Groq connection failed',
+      message: error.message 
+    });
+  }
+});
 
 // Parse trading strategy
 router.post('/parse-strategy', async (req, res) => {
@@ -66,10 +86,13 @@ router.post('/signal', async (req, res) => {
 });
 
 // Get trading insight
-router.get('/insight/:symbol', async (req, res) => {
+router.post('/insight', async (req, res) => {
   try {
-    const { symbol } = req.params;
-    const { timeframe = '1h' } = req.query;
+    const { symbol, timeframe = '1h' } = req.body;
+    
+    if (!symbol) {
+      return res.status(400).json({ error: 'Symbol is required' });
+    }
     
     console.log(`Getting insight for ${symbol}`);
     
@@ -92,28 +115,8 @@ router.get('/insight/:symbol', async (req, res) => {
   }
 });
 
-// Test Groq connection
-router.get('/test-groq', async (req, res) => {
-  try {
-    const testStrategy = "Buy when RSI is below 30 and sell when above 70";
-    const result = await groqService.parseStrategy(testStrategy);
-    
-    res.json({
-      success: true,
-      message: 'Groq connection working',
-      test_result: result
-    });
-    
-  } catch (error) {
-    res.status(500).json({ 
-      error: 'Groq connection failed',
-      message: error.message 
-    });
-  }
-});
-
 // Get Base network tokens
-router.get('/base-tokens', async (req, res) => {
+router.post('/base-tokens', async (req, res) => {
   try {
     const tokens = baseTokensService.getAllBaseTokens();
     res.json({
@@ -130,9 +133,13 @@ router.get('/base-tokens', async (req, res) => {
 });
 
 // Get Base token price
-router.get('/base-price/:symbol', async (req, res) => {
+router.post('/base-price', async (req, res) => {
   try {
-    const { symbol } = req.params;
+    const { symbol } = req.body;
+    
+    if (!symbol) {
+      return res.status(400).json({ error: 'Symbol is required' });
+    }
     
     if (!baseTokensService.isBaseToken(symbol)) {
       return res.status(404).json({ 
@@ -149,7 +156,7 @@ router.get('/base-price/:symbol', async (req, res) => {
     });
 
   } catch (error) {
-    console.error(`Base price error for ${req.params.symbol}:`, error);
+    console.error(`Base price error for ${req.body.symbol}:`, error);
     res.status(500).json({ 
       error: 'Failed to get Base token price',
       message: error.message 
@@ -158,9 +165,9 @@ router.get('/base-price/:symbol', async (req, res) => {
 });
 
 // Get top Base tokens by volume
-router.get('/base-top', async (req, res) => {
+router.post('/base-top', async (req, res) => {
   try {
-    const { limit = 10 } = req.query;
+    const { limit = 10 } = req.body;
     const topTokens = await baseTokensService.getTopBaseTokens(parseInt(limit));
     
     res.json({
@@ -178,7 +185,7 @@ router.get('/base-top', async (req, res) => {
 });
 
 // Get trending Base tokens
-router.get('/base-trending', async (req, res) => {
+router.post('/base-trending', async (req, res) => {
   try {
     const trending = await baseTokensService.getBaseTrendingTokens();
     
@@ -197,7 +204,7 @@ router.get('/base-trending', async (req, res) => {
 });
 
 // Get Base ecosystem strategies
-router.get('/base-strategies', (req, res) => {
+router.post('/base-strategies', (req, res) => {
   try {
     const strategies = baseTokensService.getBaseEcosystemStrategies();
     

@@ -1,4 +1,4 @@
-// server.js - Main server with Redis integration
+// server.js - Updated with health check as POST and production Redis config
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
@@ -38,22 +38,46 @@ app.set('io', io);
 app.use('/api/trading', tradingRoutes);
 app.use('/api/game', gameRoutes);
 
-// Health check
-app.get('/health', async (req, res) => {
+// Health check - Changed to POST
+app.post('/health', async (req, res) => {
   try {
     const redisStatus = await redisService.ping();
     res.json({ 
       status: 'Trading Agent Backend Running',
       redis: redisStatus === 'PONG' ? 'connected' : 'disconnected',
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      environment: process.env.NODE_ENV || 'development',
+      version: '1.0.0'
     });
   } catch (error) {
     res.status(500).json({
       status: 'error',
       redis: 'disconnected',
-      error: error.message
+      error: error.message,
+      timestamp: new Date().toISOString()
     });
   }
+});
+
+// Fallback GET for health check (in case needed)
+app.get('/health', async (req, res) => {
+  res.json({
+    status: 'Use POST /health for health check',
+    message: 'All endpoints have been converted to POST'
+  });
+});
+
+// Root endpoint
+app.post('/', (req, res) => {
+  res.json({
+    message: 'Trading Agent Backend API',
+    version: '1.0.0',
+    endpoints: {
+      health: 'POST /health',
+      trading: 'POST /api/trading/*',
+      game: 'POST /api/game/*'
+    }
+  });
 });
 
 // Socket.IO connection handling
@@ -105,6 +129,7 @@ redisService.subscribe('round:*:updates', (data) => {
 async function initializeServices() {
   try {
     console.log('🔄 Initializing services...');
+    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
     
     // Connect Redis first
     await redisService.connect();
@@ -115,7 +140,13 @@ async function initializeServices() {
     console.log('✅ All services initialized successfully');
   } catch (error) {
     console.error('❌ Failed to initialize services:', error);
-    process.exit(1);
+    
+    // In production, don't exit on Redis failure - try to continue without it
+    if (process.env.NODE_ENV === 'production') {
+      console.warn('⚠️ Production mode: Continuing without Redis');
+    } else {
+      process.exit(1);
+    }
   }
 }
 
@@ -141,6 +172,7 @@ process.on('SIGINT', async () => {
 // Start server
 server.listen(PORT, async () => {
   console.log(`🚀 Trading Agent Backend running on port ${PORT}`);
+  console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
   await initializeServices();
 });
 

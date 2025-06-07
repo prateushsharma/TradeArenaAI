@@ -1,4 +1,4 @@
-// routes/game.js - Trading game API routes
+// routes/game.js - All endpoints converted to POST
 const express = require('express');
 const router = express.Router();
 const tradingRoundManager = require('../services/tradingRoundManager');
@@ -73,9 +73,16 @@ router.post('/join-round', async (req, res) => {
 });
 
 // Start a round manually
-router.post('/start-round/:roundId', async (req, res) => {
+router.post('/start-round', async (req, res) => {
   try {
-    const { roundId } = req.params;
+    const { roundId } = req.body;
+    
+    if (!roundId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Round ID is required'
+      });
+    }
     
     const round = await tradingRoundManager.startRound(roundId);
     
@@ -96,9 +103,16 @@ router.post('/start-round/:roundId', async (req, res) => {
 });
 
 // Get round details
-router.get('/round/:roundId', async (req, res) => {
+router.post('/get-round', async (req, res) => {
   try {
-    const { roundId } = req.params;
+    const { roundId } = req.body;
+    
+    if (!roundId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Round ID is required'
+      });
+    }
     
     const round = await tradingRoundManager.getRound(roundId);
     if (!round) {
@@ -128,10 +142,16 @@ router.get('/round/:roundId', async (req, res) => {
 });
 
 // Get round leaderboard
-router.get('/round/:roundId/leaderboard', async (req, res) => {
+router.post('/get-leaderboard', async (req, res) => {
   try {
-    const { roundId } = req.params;
-    const { limit = 50 } = req.query;
+    const { roundId, limit = 50 } = req.body;
+    
+    if (!roundId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Round ID is required'
+      });
+    }
     
     const leaderboard = await tradingRoundManager.getLeaderboard(roundId, parseInt(limit));
     
@@ -153,9 +173,16 @@ router.get('/round/:roundId/leaderboard', async (req, res) => {
 });
 
 // Get participant details
-router.get('/round/:roundId/participant/:walletAddress', async (req, res) => {
+router.post('/get-participant', async (req, res) => {
   try {
-    const { roundId, walletAddress } = req.params;
+    const { roundId, walletAddress } = req.body;
+    
+    if (!roundId || !walletAddress) {
+      return res.status(400).json({
+        success: false,
+        error: 'Round ID and wallet address are required'
+      });
+    }
     
     const participantData = await redisService.get(`round:${roundId}:participant:${walletAddress}`);
     if (!participantData) {
@@ -183,10 +210,16 @@ router.get('/round/:roundId/participant/:walletAddress', async (req, res) => {
 });
 
 // Get participant trade logs
-router.get('/round/:roundId/participant/:walletAddress/logs', async (req, res) => {
+router.post('/get-participant-logs', async (req, res) => {
   try {
-    const { roundId, walletAddress } = req.params;
-    const { limit = 100 } = req.query;
+    const { roundId, walletAddress, limit = 100 } = req.body;
+    
+    if (!roundId || !walletAddress) {
+      return res.status(400).json({
+        success: false,
+        error: 'Round ID and wallet address are required'
+      });
+    }
     
     const logs = await tradingRoundManager.getParticipantLogs(roundId, walletAddress);
     
@@ -207,9 +240,9 @@ router.get('/round/:roundId/participant/:walletAddress/logs', async (req, res) =
 });
 
 // List rounds by status
-router.get('/rounds', async (req, res) => {
+router.post('/list-rounds', async (req, res) => {
   try {
-    const { status = 'active', limit = 20 } = req.query;
+    const { status = 'active', limit = 20 } = req.body;
     
     const rounds = await tradingRoundManager.listRounds(status);
     
@@ -237,7 +270,7 @@ router.get('/rounds', async (req, res) => {
 });
 
 // Get all round statuses
-router.get('/rounds/stats', async (req, res) => {
+router.post('/get-stats', async (req, res) => {
   try {
     const [activeRounds, runningRounds, finishedRounds] = await Promise.all([
       tradingRoundManager.listRounds('active'),
@@ -271,9 +304,16 @@ router.get('/rounds/stats', async (req, res) => {
 });
 
 // End a round manually (admin)
-router.post('/end-round/:roundId', async (req, res) => {
+router.post('/end-round', async (req, res) => {
   try {
-    const { roundId } = req.params;
+    const { roundId } = req.body;
+    
+    if (!roundId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Round ID is required'
+      });
+    }
     
     const round = await tradingRoundManager.endRound(roundId);
     
@@ -294,9 +334,16 @@ router.post('/end-round/:roundId', async (req, res) => {
 });
 
 // Get round participants list
-router.get('/round/:roundId/participants', async (req, res) => {
+router.post('/get-participants', async (req, res) => {
   try {
-    const { roundId } = req.params;
+    const { roundId } = req.body;
+    
+    if (!roundId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Round ID is required'
+      });
+    }
     
     const participantAddresses = await redisService.sMembers(`round:${roundId}:participants`);
     const participants = [];
@@ -335,9 +382,16 @@ router.get('/round/:roundId/participants', async (req, res) => {
 });
 
 // Check if wallet can join round
-router.get('/round/:roundId/can-join/:walletAddress', async (req, res) => {
+router.post('/can-join', async (req, res) => {
   try {
-    const { roundId, walletAddress } = req.params;
+    const { roundId, walletAddress } = req.body;
+    
+    if (!roundId || !walletAddress) {
+      return res.status(400).json({
+        success: false,
+        error: 'Round ID and wallet address are required'
+      });
+    }
     
     // Check if round exists
     const round = await tradingRoundManager.getRound(roundId);
