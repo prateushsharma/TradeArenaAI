@@ -1,7 +1,8 @@
-// routes/game.js - All endpoints converted to POST
+// routes/game.js - Updated with Strategy ID Management
 const express = require('express');
 const router = express.Router();
 const tradingRoundManager = require('../services/tradingRoundManager');
+const strategyManager = require('../services/strategyManager');
 const redisService = require('../services/redisService');
 
 // Create a new trading round
@@ -10,7 +11,7 @@ router.post('/create-round', async (req, res) => {
     const config = {
       title: req.body.title,
       description: req.body.description,
-      duration: req.body.duration ? parseInt(req.body.duration) * 1000 : undefined, // Convert to ms
+      duration: req.body.duration ? parseInt(req.body.duration) * 1000 : undefined,
       startingBalance: req.body.startingBalance ? parseFloat(req.body.startingBalance) : undefined,
       maxParticipants: req.body.maxParticipants ? parseInt(req.body.maxParticipants) : undefined,
       executionInterval: req.body.executionInterval ? parseInt(req.body.executionInterval) * 1000 : undefined,
@@ -38,27 +39,48 @@ router.post('/create-round', async (req, res) => {
   }
 });
 
-// Join a trading round
+// Join a trading round with strategy options
 router.post('/join-round', async (req, res) => {
   try {
-    const { roundId, walletAddress, strategy, username } = req.body;
+    const { 
+      roundId, 
+      walletAddress, 
+      strategy,           // New strategy text
+      username, 
+      strategyId,         // Existing strategy ID
+      royaltyPercent,     // For new strategies
+      licenseStrategyId   // License someone else's strategy
+    } = req.body;
     
-    if (!roundId || !walletAddress || !strategy) {
+    if (!roundId || !walletAddress) {
       return res.status(400).json({
         success: false,
-        error: 'Round ID, wallet address, and strategy are required'
+        error: 'Round ID and wallet address are required'
+      });
+    }
+
+    // Must have either strategy text, strategyId, or licenseStrategyId
+    if (!strategy && !strategyId && !licenseStrategyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Must provide either strategy text, strategyId, or licenseStrategyId'
       });
     }
 
     const participant = await tradingRoundManager.joinRound(roundId, {
       walletAddress,
       strategy,
-      username
+      username,
+      strategyId,
+      royaltyPercent,
+      licenseStrategyId
     });
     
     res.json({
       success: true,
       participant,
+      strategyId: participant.strategy.id,
+      isLicensed: participant.strategy.isLicensed,
       message: 'Successfully joined the round'
     });
 
@@ -67,6 +89,169 @@ router.post('/join-round', async (req, res) => {
     res.status(400).json({
       success: false,
       error: 'Failed to join round',
+      message: error.message
+    });
+  }
+});
+
+// Register a new strategy
+router.post('/register-strategy', async (req, res) => {
+  try {
+    const { walletAddress, strategy, royaltyPercent, name, description } = req.body;
+    
+    if (!walletAddress || !strategy) {
+      return res.status(400).json({
+        success: false,
+        error: 'Wallet address and strategy text are required'
+      });
+    }
+
+    const registeredStrategy = await strategyManager.registerStrategy(
+      walletAddress,
+      strategy,
+      royaltyPercent || 20,
+      name,
+      description
+    );
+    
+    res.json({
+      success: true,
+      strategy: registeredStrategy,
+      message: 'Strategy registered successfully'
+    });
+
+  } catch (error) {
+    console.error('Register strategy error:', error);
+    res.status(400).json({
+      success: false,
+      error: 'Failed to register strategy',
+      message: error.message
+    });
+  }
+});
+
+// Get user's strategies
+router.post('/get-user-strategies', async (req, res) => {
+  try {
+    const { walletAddress } = req.body;
+    
+    if (!walletAddress) {
+      return res.status(400).json({
+        success: false,
+        error: 'Wallet address is required'
+      });
+    }
+    
+    const strategies = await tradingRoundManager.getUserStrategies(walletAddress);
+    
+    res.json({
+      success: true,
+      strategies,
+      count: strategies.length
+    });
+
+  } catch (error) {
+    console.error('Get user strategies error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get user strategies',
+      message: error.message
+    });
+  }
+});
+
+// Get strategy marketplace (top strategies)
+router.post('/get-marketplace', async (req, res) => {
+  try {
+    const { limit = 20 } = req.body;
+    
+    const strategies = await tradingRoundManager.getAvailableStrategies(parseInt(limit));
+    
+    res.json({
+      success: true,
+      strategies,
+      count: strategies.length
+    });
+
+  } catch (error) {
+    console.error('Get marketplace error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get marketplace',
+      message: error.message
+    });
+  }
+});
+
+// Search strategies
+router.post('/search-strategies', async (req, res) => {
+  try {
+    const { query, limit = 10 } = req.body;
+    
+    if (!query) {
+      return res.status(400).json({
+        success: false,
+        error: 'Search query is required'
+      });
+    }
+    
+    const strategies = await tradingRoundManager.searchStrategies(query, parseInt(limit));
+    
+    res.json({
+      success: true,
+      strategies,
+      count: strategies.length,
+      query
+    });
+
+  } catch (error) {
+    console.error('Search strategies error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to search strategies',
+      message: error.message
+    });
+  }
+});
+
+// Get strategy details
+router.post('/get-strategy', async (req, res) => {
+  try {
+    const { strategyId } = req.body;
+    
+    if (!strategyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Strategy ID is required'
+      });
+    }
+    
+    const strategy = await strategyManager.getStrategy(strategyId);
+    
+    // Don't return the actual strategy text, just metadata
+    const publicStrategy = {
+      id: strategy.id,
+      name: strategy.name,
+      description: strategy.description,
+      owner: strategy.owner,
+      royaltyPercent: strategy.royaltyPercent,
+      stats: strategy.stats,
+      tags: strategy.tags,
+      isActive: strategy.isActive,
+      isVerified: strategy.isVerified,
+      createdAt: strategy.createdAt
+    };
+    
+    res.json({
+      success: true,
+      strategy: publicStrategy
+    });
+
+  } catch (error) {
+    console.error('Get strategy error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get strategy',
       message: error.message
     });
   }
@@ -122,7 +307,6 @@ router.post('/get-round', async (req, res) => {
       });
     }
 
-    // Get participant count
     const participantAddresses = await redisService.sMembers(`round:${roundId}:participants`);
     round.currentParticipants = participantAddresses.length;
 
@@ -167,6 +351,37 @@ router.post('/get-leaderboard', async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Failed to get leaderboard',
+      message: error.message
+    });
+  }
+});
+
+// Get round participants with strategy info
+router.post('/get-participants', async (req, res) => {
+  try {
+    const { roundId } = req.body;
+    
+    if (!roundId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Round ID is required'
+      });
+    }
+    
+    const participants = await tradingRoundManager.getRoundParticipants(roundId);
+    
+    res.json({
+      success: true,
+      roundId,
+      participants,
+      count: participants.length
+    });
+
+  } catch (error) {
+    console.error('Get participants error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get participants',
       message: error.message
     });
   }
@@ -269,7 +484,7 @@ router.post('/list-rounds', async (req, res) => {
   }
 });
 
-// Get all round statuses
+// Get all round statistics
 router.post('/get-stats', async (req, res) => {
   try {
     const [activeRounds, runningRounds, finishedRounds] = await Promise.all([
@@ -287,7 +502,7 @@ router.post('/get-stats', async (req, res) => {
         total: activeRounds.length + runningRounds.length + finishedRounds.length
       },
       rounds: {
-        active: activeRounds.slice(0, 5), // Latest 5
+        active: activeRounds.slice(0, 5),
         running: runningRounds.slice(0, 5),
         finished: finishedRounds.slice(0, 10)
       }
@@ -333,54 +548,6 @@ router.post('/end-round', async (req, res) => {
   }
 });
 
-// Get round participants list
-router.post('/get-participants', async (req, res) => {
-  try {
-    const { roundId } = req.body;
-    
-    if (!roundId) {
-      return res.status(400).json({
-        success: false,
-        error: 'Round ID is required'
-      });
-    }
-    
-    const participantAddresses = await redisService.sMembers(`round:${roundId}:participants`);
-    const participants = [];
-    
-    for (const address of participantAddresses) {
-      const participantData = await redisService.get(`round:${roundId}:participant:${address}`);
-      if (participantData) {
-        const participant = JSON.parse(participantData);
-        participants.push({
-          walletAddress: participant.walletAddress,
-          username: participant.username,
-          joinedAt: participant.joinedAt,
-          isActive: participant.isActive,
-          totalValue: participant.portfolio.totalValue,
-          pnlPercentage: participant.portfolio.pnlPercentage,
-          trades: participant.portfolio.trades
-        });
-      }
-    }
-    
-    res.json({
-      success: true,
-      roundId,
-      participants,
-      count: participants.length
-    });
-
-  } catch (error) {
-    console.error('Get participants error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to get participants',
-      message: error.message
-    });
-  }
-});
-
 // Check if wallet can join round
 router.post('/can-join', async (req, res) => {
   try {
@@ -393,7 +560,6 @@ router.post('/can-join', async (req, res) => {
       });
     }
     
-    // Check if round exists
     const round = await tradingRoundManager.getRound(roundId);
     if (!round) {
       return res.json({
@@ -403,7 +569,6 @@ router.post('/can-join', async (req, res) => {
       });
     }
     
-    // Check round status
     if (round.status !== 'waiting') {
       return res.json({
         success: false,
@@ -412,7 +577,6 @@ router.post('/can-join', async (req, res) => {
       });
     }
     
-    // Check if wallet already joined
     const participantKey = `round:${roundId}:participant:${walletAddress}`;
     const existingParticipant = await redisService.get(participantKey);
     if (existingParticipant) {
@@ -423,7 +587,6 @@ router.post('/can-join', async (req, res) => {
       });
     }
     
-    // Check if round is full
     const participantAddresses = await redisService.sMembers(`round:${roundId}:participants`);
     if (participantAddresses.length >= round.maxParticipants) {
       return res.json({

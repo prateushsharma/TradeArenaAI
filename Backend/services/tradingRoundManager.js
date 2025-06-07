@@ -1,7 +1,8 @@
-// services/tradingRoundManager.js - Trading round management service
+// services/tradingRoundManager.js - Complete Trading round management service with Strategy IDs
 const redisService = require('./redisService');
 const groqService = require('./groqService');
 const baseTokensService = require('./baseTokensService');
+const strategyManager = require('./strategyManager');
 const { EventEmitter } = require('events');
 
 class TradingRoundManager extends EventEmitter {
@@ -70,12 +71,12 @@ class TradingRoundManager extends EventEmitter {
     return round;
   }
 
-  // Join round with wallet address and strategy
+  // Join round with wallet address and strategy options
   async joinRound(roundId, participantData) {
-    const { walletAddress, strategy, username } = participantData;
+    const { walletAddress, strategy, username, strategyId, royaltyPercent, licenseStrategyId } = participantData;
     
-    if (!walletAddress || !strategy) {
-      throw new Error('Wallet address and strategy are required');
+    if (!walletAddress) {
+      throw new Error('Wallet address is required');
     }
 
     // Get round data
@@ -102,16 +103,59 @@ class TradingRoundManager extends EventEmitter {
       throw new Error('Round is full');
     }
 
-    // Parse strategy with AI
-    console.log(`🧠 Parsing strategy for ${walletAddress.slice(0, 8)}...`);
-    const parsedStrategy = await groqService.parseStrategy(strategy);
+    // Handle strategy logic - 3 different ways to join
+    let finalStrategyId = strategyId;
+    let parsedStrategy;
+    let isLicensedStrategy = false;
+    let licenseData = null;
+
+    if (licenseStrategyId) {
+      // User wants to license an existing strategy
+      console.log(`📜 User ${walletAddress.slice(0, 8)}... licensing strategy ${licenseStrategyId}`);
+      
+      licenseData = await strategyManager.licenseStrategy(walletAddress, licenseStrategyId, roundId);
+      finalStrategyId = licenseStrategyId;
+      parsedStrategy = await strategyManager.getStrategyForExecution(licenseStrategyId);
+      isLicensedStrategy = true;
+      
+    } else if (strategy && !strategyId) {
+      // New strategy - register it first
+      console.log(`🧠 Registering new strategy for ${walletAddress.slice(0, 8)}...`);
+      
+      const registeredStrategy = await strategyManager.registerStrategy(
+        walletAddress, 
+        strategy, 
+        royaltyPercent || 20,
+        `Strategy for Round ${roundId}`,
+        `Trading strategy created for round ${roundId}`
+      );
+      
+      finalStrategyId = registeredStrategy.id;
+      parsedStrategy = await strategyManager.getStrategyForExecution(finalStrategyId);
+      
+    } else if (strategyId) {
+      // User's existing strategy
+      console.log(`🔄 Using existing strategy ${strategyId} for ${walletAddress.slice(0, 8)}...`);
+      
+      const strategyData = await strategyManager.getStrategy(strategyId);
+      if (strategyData.owner !== walletAddress) {
+        throw new Error('Not your strategy');
+      }
+      
+      parsedStrategy = await strategyManager.getStrategyForExecution(strategyId);
+      
+    } else {
+      throw new Error('Strategy is required - provide either strategy text, strategyId, or licenseStrategyId');
+    }
 
     // Create participant data
     const participant = {
       walletAddress,
       username: username || `Player_${walletAddress.slice(-6)}`,
       strategy: {
-        original: strategy,
+        id: finalStrategyId,
+        isLicensed: isLicensedStrategy,
+        licenseData: licenseData,
         parsed: parsedStrategy,
         enabled: true
       },
@@ -142,7 +186,7 @@ class TradingRoundManager extends EventEmitter {
     round.stats.totalParticipants += 1;
     await redisService.set(`round:${roundId}`, JSON.stringify(round));
 
-    console.log(`👤 ${participant.username} (${walletAddress.slice(0, 8)}...) joined round ${roundId}`);
+    console.log(`👤 ${participant.username} (${walletAddress.slice(0, 8)}...) joined round ${roundId} with strategy ${finalStrategyId}`);
     
     // Auto-start if conditions met
     if (round.settings.autoStart && round.stats.totalParticipants >= round.settings.minParticipants) {
@@ -152,7 +196,13 @@ class TradingRoundManager extends EventEmitter {
     }
 
     // Emit event
-    this.emit('participantJoined', { roundId, participant, totalParticipants: round.stats.totalParticipants });
+    this.emit('participantJoined', { 
+      roundId, 
+      participant, 
+      totalParticipants: round.stats.totalParticipants,
+      strategyId: finalStrategyId,
+      isLicensed: isLicensedStrategy
+    });
     
     return participant;
   }
@@ -484,7 +534,7 @@ class TradingRoundManager extends EventEmitter {
     }
   }
 
-  // End round
+  // End round and update strategy performance
   async endRound(roundId) {
     // Clear execution interval
     const intervalId = this.activeExecutions.get(roundId);
@@ -505,6 +555,12 @@ class TradingRoundManager extends EventEmitter {
     await redisService.sRem('rounds:running', roundId);
     await redisService.sAdd('rounds:finished', roundId);
     
+    // Update strategy performance stats
+    await this.updateStrategyPerformance(roundId);
+    
+    // Handle profit sharing for licensed strategies
+    await this.handleProfitSharing(roundId);
+    
     // Final leaderboard update
     await this.updateLeaderboard(roundId);
     
@@ -514,6 +570,75 @@ class TradingRoundManager extends EventEmitter {
     this.emit('roundEnded', { roundId, round });
     
     return round;
+  }
+
+  // Update strategy performance after round
+  async updateStrategyPerformance(roundId) {
+    try {
+      const participantAddresses = await redisService.sMembers(`round:${roundId}:participants`);
+      
+      for (const address of participantAddresses) {
+        const participantData = await redisService.get(`round:${roundId}:participant:${address}`);
+        if (participantData) {
+          const participant = JSON.parse(participantData);
+          const strategyId = participant.strategy.id;
+          
+          if (strategyId) {
+            const performance = {
+              trades: participant.portfolio.trades,
+              won: participant.portfolio.pnlPercentage > 0,
+              earnings: participant.portfolio.pnl,
+              returnPercent: participant.portfolio.pnlPercentage
+            };
+            
+            await strategyManager.updateStrategyStats(strategyId, performance);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Update strategy performance error:', error);
+    }
+  }
+
+  // Handle profit sharing for licensed strategies (Redis tracking only)
+  async handleProfitSharing(roundId) {
+    try {
+      const participantAddresses = await redisService.sMembers(`round:${roundId}:participants`);
+      
+      for (const address of participantAddresses) {
+        const participantData = await redisService.get(`round:${roundId}:participant:${address}`);
+        if (participantData) {
+          const participant = JSON.parse(participantData);
+          
+          // Track profit sharing for licensed strategies
+          if (participant.strategy.isLicensed && participant.portfolio.pnl > 0) {
+            const licenseData = participant.strategy.licenseData;
+            const profit = participant.portfolio.pnl;
+            
+            console.log(`💰 Profit sharing tracked: User ${address.slice(0, 8)}... made ${profit} with licensed strategy ${licenseData.strategyId}`);
+            
+            // Store profit sharing data for future smart contract integration
+            const profitSharingData = {
+              roundId,
+              userAddress: address,
+              strategyId: licenseData.strategyId,
+              strategyOwner: licenseData.strategyOwner,
+              totalProfit: profit,
+              royaltyPercent: licenseData.royaltyPercent,
+              timestamp: new Date().toISOString()
+            };
+            
+            await redisService.set(
+              `profit_sharing:${roundId}:${address}`,
+              JSON.stringify(profitSharingData),
+              { ttl: 30 * 24 * 3600 } // 30 days TTL
+            );
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Handle profit sharing error:', error);
+    }
   }
 
   // Get round leaderboard
@@ -542,7 +667,9 @@ class TradingRoundManager extends EventEmitter {
                 pnlPercentage: score,
                 totalValue: participant.portfolio.totalValue || 0,
                 trades: participant.portfolio.trades || 0,
-                winRate: participant.portfolio.winRate || 0
+                winRate: participant.portfolio.winRate || 0,
+                strategyId: participant.strategy.id,
+                isLicensed: participant.strategy.isLicensed
               });
             }
           }
@@ -564,7 +691,9 @@ class TradingRoundManager extends EventEmitter {
               pnlPercentage: participant.portfolio.pnlPercentage || 0,
               totalValue: participant.portfolio.totalValue || 0,
               trades: participant.portfolio.trades || 0,
-              winRate: participant.portfolio.winRate || 0
+              winRate: participant.portfolio.winRate || 0,
+              strategyId: participant.strategy.id,
+              isLicensed: participant.strategy.isLicensed
             });
           }
         }
@@ -579,6 +708,83 @@ class TradingRoundManager extends EventEmitter {
       return leaderboard.slice(0, limit);
     } catch (error) {
       console.error(`Leaderboard error for round ${roundId}:`, error);
+      return [];
+    }
+  }
+
+  // Get round participants with strategy info
+  async getRoundParticipants(roundId) {
+    try {
+      const participantAddresses = await redisService.sMembers(`round:${roundId}:participants`);
+      const participants = [];
+      
+      for (const address of participantAddresses) {
+        const participantData = await redisService.get(`round:${roundId}:participant:${address}`);
+        if (participantData) {
+          const participant = JSON.parse(participantData);
+          
+          // Get strategy name from strategy manager
+          let strategyName = 'Unknown Strategy';
+          try {
+            if (participant.strategy.id) {
+              const strategy = await strategyManager.getStrategy(participant.strategy.id);
+              strategyName = strategy.name;
+            }
+          } catch (error) {
+            console.error(`Error getting strategy name for ${participant.strategy.id}:`, error);
+          }
+          
+          participants.push({
+            walletAddress: participant.walletAddress,
+            username: participant.username,
+            strategyId: participant.strategy.id,
+            strategyName: strategyName,
+            isLicensedStrategy: participant.strategy.isLicensed,
+            joinedAt: participant.joinedAt,
+            isActive: participant.isActive,
+            portfolio: {
+              totalValue: participant.portfolio.totalValue,
+              pnlPercentage: participant.portfolio.pnlPercentage,
+              trades: participant.portfolio.trades,
+              winRate: participant.portfolio.winRate
+            }
+          });
+        }
+      }
+      
+      return participants;
+    } catch (error) {
+      console.error(`Get round participants ${roundId} error:`, error);
+      return [];
+    }
+  }
+
+  // Get strategy marketplace data for round
+  async getAvailableStrategies(limit = 10) {
+    try {
+      return await strategyManager.getTopStrategies(limit);
+    } catch (error) {
+      console.error('Get available strategies error:', error);
+      return [];
+    }
+  }
+
+  // Search strategies for licensing
+  async searchStrategies(query, limit = 10) {
+    try {
+      return await strategyManager.searchStrategies(query, limit);
+    } catch (error) {
+      console.error('Search strategies error:', error);
+      return [];
+    }
+  }
+
+  // Get user's strategies
+  async getUserStrategies(walletAddress) {
+    try {
+      return await strategyManager.getUserStrategies(walletAddress);
+    } catch (error) {
+      console.error(`Get user strategies for ${walletAddress} error:`, error);
       return [];
     }
   }
