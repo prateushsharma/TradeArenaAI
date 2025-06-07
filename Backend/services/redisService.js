@@ -1,359 +1,268 @@
-// services/redisService.js - COMPLETE UPDATED VERSION
-const Redis = require('redis');
-
+// services/redisService.js - COMPLETELY DISABLED VERSION FOR HACKATHON
 class RedisService {
   constructor() {
     this.client = null;
     this.isConnected = false;
     
-    // Single config for Upstash Redis
-    this.config = this.getRedisConfig();
-  }
-
-  getRedisConfig() {
-    // Check if we have a Redis URL (production)
-    if (process.env.REDIS_URL) {
-      console.log('📡 Using Redis URL for production connection');
-      return {
-        url: process.env.REDIS_URL,
-        socket: {
-          tls: false, // Upstash regular Redis doesn't need TLS
-          rejectUnauthorized: false,
-          connectTimeout: 60000,
-          commandTimeout: 5000,
-          lazyConnect: true
-        },
-        retryDelayOnFailover: 100,
-        maxRetriesPerRequest: 3
-      };
-    }
+    // In-memory storage for hackathon demo
+    this.memoryStorage = new Map();
+    this.setStorage = new Map(); // For Redis sets
+    this.hashStorage = new Map(); // For Redis hashes
+    this.sortedSetStorage = new Map(); // For Redis sorted sets
+    this.counterStorage = new Map(); // For Redis counters
     
-    // Fallback to individual config (development)
-    return {
-      host: process.env.REDIS_HOST || 'localhost',
-      port: process.env.REDIS_PORT || 6379,
-      password: process.env.REDIS_PASSWORD || undefined,
-      retryDelayOnFailover: 100,
-      maxRetriesPerRequest: 3,
-      socket: {
-        reconnectDelayOnFailover: 100,
-        maxRetriesPerRequest: 3,
-        connectTimeout: 10000,
-        lazyConnect: true
-      }
-    };
+    console.log('⚠️ Redis disabled - using in-memory storage for hackathon demo');
   }
 
   async connect() {
-    try {
-      console.log(`🔄 Initializing Redis connection...`);
-      console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-      
-      // Create ONLY ONE client (no subscriber/publisher)
-      this.client = Redis.createClient(this.config);
-      
-      // Set up error handlers before connecting
-      this.setupErrorHandlers();
-
-      // Connect client
-      await this.client.connect();
-
-      this.isConnected = true;
-      console.log('✅ Redis service connected successfully');
-      console.log(`📍 Redis configured with URL connection`);
-
-    } catch (error) {
-      console.error('❌ Redis connection failed:', error.message);
-      this.isConnected = false;
-      
-      // In production, don't throw - allow app to continue without Redis
-      if (process.env.NODE_ENV === 'production') {
-        console.warn('⚠️ Production mode: Continuing without Redis');
-        return;
-      }
-      
-      throw error;
-    }
-  }
-
-  setupErrorHandlers() {
-    this.client.on('error', (err) => {
-      console.error('Redis Client Error:', err.message);
-      this.isConnected = false;
-    });
-    
-    this.client.on('connect', () => {
-      console.log('🔗 Redis client connected');
-      this.isConnected = true;
-    });
-    
-    this.client.on('reconnecting', () => {
-      console.log('🔄 Redis client reconnecting...');
-    });
-    
-    this.client.on('ready', () => {
-      console.log('✅ Redis client ready');
-      this.isConnected = true;
-    });
+    console.log('📦 Using in-memory storage (Redis disabled for stability)');
+    this.isConnected = true;
+    return;
   }
 
   async disconnect() {
-    if (this.isConnected && this.client) {
-      try {
-        await this.client.quit();
-        this.isConnected = false;
-        console.log('✅ Redis service disconnected');
-      } catch (error) {
-        console.error('❌ Redis disconnect error:', error.message);
-      }
-    }
+    console.log('📦 Memory storage cleared');
+    this.memoryStorage.clear();
+    this.setStorage.clear();
+    this.hashStorage.clear();
+    this.sortedSetStorage.clear();
+    this.counterStorage.clear();
+    this.isConnected = false;
   }
 
-  // Safe operation wrapper
-  async safeOperation(operation, fallback = null) {
-    if (!this.isConnected) {
-      if (process.env.NODE_ENV === 'production') {
-        console.warn('⚠️ Redis not connected, returning fallback');
-        return fallback;
-      }
-      throw new Error('Redis not connected');
-    }
-    
-    try {
-      return await operation();
-    } catch (error) {
-      console.error('Redis operation error:', error.message);
-      if (process.env.NODE_ENV === 'production') {
-        return fallback;
-      }
-      throw error;
-    }
-  }
-
-  // Generic Redis operations with safety checks
+  // Basic operations using memory
   async get(key) {
-    return await this.safeOperation(
-      () => this.client.get(key),
-      null
-    );
+    const value = this.memoryStorage.get(key);
+    console.log(`📦 GET ${key}:`, value ? 'found' : 'not found');
+    return value || null;
   }
 
   async set(key, value, options = {}) {
-    return await this.safeOperation(() => {
-      if (options.ttl) {
-        return this.client.setEx(key, options.ttl, value);
-      }
-      return this.client.set(key, value);
-    }, false);
-  }
-
-  async del(key) {
-    return await this.safeOperation(
-      () => this.client.del(key),
-      0
-    );
-  }
-
-  async exists(key) {
-    return await this.safeOperation(
-      () => this.client.exists(key),
-      false
-    );
-  }
-
-  async hSet(key, field, value) {
-    return await this.safeOperation(
-      () => this.client.hSet(key, field, value),
-      false
-    );
-  }
-
-  async hGet(key, field) {
-    return await this.safeOperation(
-      () => this.client.hGet(key, field),
-      null
-    );
-  }
-
-  async hGetAll(key) {
-    return await this.safeOperation(
-      () => this.client.hGetAll(key),
-      {}
-    );
-  }
-
-  async hDel(key, field) {
-    return await this.safeOperation(
-      () => this.client.hDel(key, field),
-      0
-    );
-  }
-
-  async sAdd(key, member) {
-    return await this.safeOperation(
-      () => this.client.sAdd(key, member),
-      0
-    );
-  }
-
-  async sRem(key, member) {
-    return await this.safeOperation(
-      () => this.client.sRem(key, member),
-      0
-    );
-  }
-
-  async sMembers(key) {
-    return await this.safeOperation(
-      () => this.client.sMembers(key),
-      []
-    );
-  }
-
-  async zAdd(key, score, member) {
-    return await this.safeOperation(
-      () => this.client.zAdd(key, { score, value: member }),
-      0
-    );
-  }
-
-  async zRangeByScore(key, min, max) {
-    return await this.safeOperation(
-      () => this.client.zRangeByScore(key, min, max),
-      []
-    );
-  }
-
-  async zRevRange(key, start, stop) {
-    return await this.safeOperation(async () => {
-      try {
-        // Try newer Redis client method first
-        if (this.client.zRevRange) {
-          return await this.client.zRevRange(key, start, stop, { WITHSCORES: true });
-        }
-        
-        // Try older method names
-        if (this.client.ZREVRANGE) {
-          return await this.client.ZREVRANGE(key, start, stop, 'WITHSCORES');
-        }
-        
-        // Manual command approach
-        const result = await this.client.sendCommand(['ZREVRANGE', key, start.toString(), stop.toString(), 'WITHSCORES']);
-        return result;
-        
-      } catch (error) {
-        console.error('Redis zRevRange error:', error.message);
-        console.log('Attempting alternative Redis zRevRange method...');
-        
-        try {
-          // Last resort - use eval command
-          const script = `
-            local result = redis.call('ZREVRANGE', KEYS[1], ARGV[1], ARGV[2], 'WITHSCORES')
-            return result
-          `;
-          return await this.client.eval(script, 1, key, start.toString(), stop.toString());
-        } catch (evalError) {
-          console.error('All Redis zRevRange methods failed:', evalError.message);
-          return [];
-        }
-      }
-    }, []);
-  }
-
-  // Pub/Sub operations - DISABLED to prevent connection issues
-  async publish(channel, message) {
-    // Log what would be published but don't actually publish
-    console.log(`📢 [DISABLED] Would publish to ${channel}:`, JSON.stringify(message).substring(0, 100) + '...');
-    return 1; // Return success code
-  }
-
-  async subscribe(channel, callback) {
-    // Log subscription attempt but don't actually subscribe
-    console.log(`📡 [DISABLED] Would subscribe to ${channel}`);
-    // Don't create subscription to avoid connection issues
-  }
-
-  async unsubscribe(channel) {
-    console.log(`📡 [DISABLED] Would unsubscribe from ${channel}`);
-    return true;
-  }
-
-  async incr(key) {
-    return await this.safeOperation(
-      () => this.client.incr(key),
-      1
-    );
-  }
-
-  async expire(key, seconds) {
-    return await this.safeOperation(
-      () => this.client.expire(key, seconds),
-      false
-    );
-  }
-
-  async ttl(key) {
-    return await this.safeOperation(
-      () => this.client.ttl(key),
-      -1
-    );
-  }
-
-  async keys(pattern) {
-    return await this.safeOperation(
-      () => this.client.keys(pattern),
-      []
-    );
-  }
-
-  // Batch operations
-  async multi() {
-    if (!this.isConnected) {
-      console.warn('Redis not connected for multi operation');
-      return null;
-    }
-    return this.client.multi();
-  }
-
-  // Health check
-  async ping() {
-    if (!this.isConnected) return 'DISCONNECTED';
-    
-    try {
-      const result = await this.client.ping();
-      return result;
-    } catch (error) {
-      console.error('Redis ping error:', error.message);
-      return 'ERROR';
-    }
-  }
-
-  // Production-safe operations for fallback behavior
-  isRedisAvailable() {
-    return this.isConnected;
-  }
-
-  // Memory fallback storage for when Redis is unavailable
-  memoryStorage = new Map();
-  
-  async getWithFallback(key) {
-    if (this.isConnected) {
-      return await this.get(key);
-    }
-    return this.memoryStorage.get(key) || null;
-  }
-
-  async setWithFallback(key, value, options = {}) {
-    if (this.isConnected) {
-      return await this.set(key, value, options);
-    }
     this.memoryStorage.set(key, value);
+    console.log(`📦 SET ${key}: stored`);
+    
     if (options.ttl) {
       setTimeout(() => {
         this.memoryStorage.delete(key);
+        console.log(`📦 TTL expired for ${key}`);
       }, options.ttl * 1000);
     }
     return true;
+  }
+
+  async del(key) {
+    const existed = this.memoryStorage.has(key);
+    this.memoryStorage.delete(key);
+    console.log(`📦 DEL ${key}:`, existed ? 'deleted' : 'not found');
+    return existed ? 1 : 0;
+  }
+
+  async exists(key) {
+    const exists = this.memoryStorage.has(key);
+    console.log(`📦 EXISTS ${key}:`, exists);
+    return exists;
+  }
+
+  // Hash operations
+  async hSet(key, field, value) {
+    if (!this.hashStorage.has(key)) {
+      this.hashStorage.set(key, new Map());
+    }
+    this.hashStorage.get(key).set(field, value);
+    console.log(`📦 HSET ${key} ${field}: stored`);
+    return true;
+  }
+
+  async hGet(key, field) {
+    const hash = this.hashStorage.get(key);
+    const value = hash ? hash.get(field) : null;
+    console.log(`📦 HGET ${key} ${field}:`, value ? 'found' : 'not found');
+    return value || null;
+  }
+
+  async hGetAll(key) {
+    const hash = this.hashStorage.get(key);
+    if (!hash) {
+      console.log(`📦 HGETALL ${key}: not found`);
+      return {};
+    }
+    
+    const result = {};
+    for (const [field, value] of hash.entries()) {
+      result[field] = value;
+    }
+    console.log(`📦 HGETALL ${key}: ${Object.keys(result).length} fields`);
+    return result;
+  }
+
+  async hDel(key, field) {
+    const hash = this.hashStorage.get(key);
+    if (!hash) {
+      console.log(`📦 HDEL ${key} ${field}: hash not found`);
+      return 0;
+    }
+    
+    const existed = hash.has(field);
+    hash.delete(field);
+    console.log(`📦 HDEL ${key} ${field}:`, existed ? 'deleted' : 'not found');
+    return existed ? 1 : 0;
+  }
+
+  // Set operations
+  async sAdd(key, member) {
+    if (!this.setStorage.has(key)) {
+      this.setStorage.set(key, new Set());
+    }
+    const existed = this.setStorage.get(key).has(member);
+    this.setStorage.get(key).add(member);
+    console.log(`📦 SADD ${key} ${member}:`, existed ? 'already exists' : 'added');
+    return existed ? 0 : 1;
+  }
+
+  async sRem(key, member) {
+    const set = this.setStorage.get(key);
+    if (!set) {
+      console.log(`📦 SREM ${key} ${member}: set not found`);
+      return 0;
+    }
+    
+    const existed = set.has(member);
+    set.delete(member);
+    console.log(`📦 SREM ${key} ${member}:`, existed ? 'removed' : 'not found');
+    return existed ? 1 : 0;
+  }
+
+  async sMembers(key) {
+    const set = this.setStorage.get(key);
+    if (!set) {
+      console.log(`📦 SMEMBERS ${key}: set not found`);
+      return [];
+    }
+    
+    const members = Array.from(set);
+    console.log(`📦 SMEMBERS ${key}: ${members.length} members`);
+    return members;
+  }
+
+  // Sorted set operations
+  async zAdd(key, score, member) {
+    if (!this.sortedSetStorage.has(key)) {
+      this.sortedSetStorage.set(key, new Map());
+    }
+    this.sortedSetStorage.get(key).set(member, score);
+    console.log(`📦 ZADD ${key} ${score} ${member}: added`);
+    return 1;
+  }
+
+  async zRevRange(key, start, stop) {
+    const sortedSet = this.sortedSetStorage.get(key);
+    if (!sortedSet) {
+      console.log(`📦 ZREVRANGE ${key}: sorted set not found`);
+      return [];
+    }
+
+    // Convert to array and sort by score (descending)
+    const entries = Array.from(sortedSet.entries());
+    entries.sort((a, b) => b[1] - a[1]); // Sort by score descending
+    
+    const sliced = entries.slice(start, stop + 1);
+    const result = [];
+    
+    // Return in format: [member, score, member, score, ...]
+    for (const [member, score] of sliced) {
+      result.push(member, score);
+    }
+    
+    console.log(`📦 ZREVRANGE ${key}: ${result.length / 2} entries`);
+    return result;
+  }
+
+  // Counter operations
+  async incr(key) {
+    const current = this.counterStorage.get(key) || 0;
+    const newValue = current + 1;
+    this.counterStorage.set(key, newValue);
+    console.log(`📦 INCR ${key}: ${newValue}`);
+    return newValue;
+  }
+
+  async expire(key, seconds) {
+    if (this.memoryStorage.has(key)) {
+      setTimeout(() => {
+        this.memoryStorage.delete(key);
+        console.log(`📦 TTL expired for ${key}`);
+      }, seconds * 1000);
+      console.log(`📦 EXPIRE ${key}: ${seconds}s`);
+      return true;
+    }
+    return false;
+  }
+
+  async keys(pattern) {
+    // Simple pattern matching for memory storage
+    const allKeys = Array.from(this.memoryStorage.keys());
+    let matchedKeys = allKeys;
+    
+    if (pattern !== '*') {
+      const regex = new RegExp(pattern.replace('*', '.*'));
+      matchedKeys = allKeys.filter(key => regex.test(key));
+    }
+    
+    console.log(`📦 KEYS ${pattern}: ${matchedKeys.length} matches`);
+    return matchedKeys;
+  }
+
+  async ping() {
+    console.log('📦 PING: memory storage active');
+    return 'PONG';
+  }
+
+  // Disabled pub/sub operations
+  async publish(channel, message) {
+    console.log(`📦 [DISABLED] Would publish to ${channel}`);
+    return 1;
+  }
+
+  async subscribe(channel, callback) {
+    console.log(`📦 [DISABLED] Would subscribe to ${channel}`);
+  }
+
+  async unsubscribe(channel) {
+    console.log(`📦 [DISABLED] Would unsubscribe from ${channel}`);
+    return true;
+  }
+
+  // Utility methods
+  async ttl(key) {
+    return this.memoryStorage.has(key) ? -1 : -2;
+  }
+
+  async multi() {
+    console.log('📦 [DISABLED] Multi operations not supported in memory mode');
+    return null;
+  }
+
+  isRedisAvailable() {
+    return true; // Memory storage is always "available"
+  }
+
+  // Fallback methods (same as main methods in memory mode)
+  async getWithFallback(key) {
+    return await this.get(key);
+  }
+
+  async setWithFallback(key, value, options = {}) {
+    return await this.set(key, value, options);
+  }
+
+  // Safe operation wrapper (not needed in memory mode)
+  async safeOperation(operation, fallback = null) {
+    try {
+      return await operation();
+    } catch (error) {
+      console.error('Memory storage error:', error);
+      return fallback;
+    }
   }
 }
 
