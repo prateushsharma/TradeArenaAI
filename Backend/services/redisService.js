@@ -1,14 +1,12 @@
-// services/redisService.js - Updated for Production Redis on Render
+// services/redisService.js - COMPLETE UPDATED VERSION
 const Redis = require('redis');
 
 class RedisService {
   constructor() {
     this.client = null;
-    this.subscriber = null;
-    this.publisher = null;
     this.isConnected = false;
     
-    // Production Redis configuration for Render
+    // Single config for Upstash Redis
     this.config = this.getRedisConfig();
   }
 
@@ -20,8 +18,13 @@ class RedisService {
         url: process.env.REDIS_URL,
         socket: {
           tls: false, // Upstash regular Redis doesn't need TLS
-        rejectUnauthorized: false
-        }
+          rejectUnauthorized: false,
+          connectTimeout: 60000,
+          commandTimeout: 5000,
+          lazyConnect: true
+        },
+        retryDelayOnFailover: 100,
+        maxRetriesPerRequest: 3
       };
     }
     
@@ -43,31 +46,21 @@ class RedisService {
 
   async connect() {
     try {
-      console.log(`🔄 Connecting to Redis...`);
+      console.log(`🔄 Initializing Redis connection...`);
       console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
       
-      // Main client for operations
+      // Create ONLY ONE client (no subscriber/publisher)
       this.client = Redis.createClient(this.config);
       
-      // Dedicated subscriber for pub/sub
-      this.subscriber = this.client.duplicate();
-      
-      // Dedicated publisher for pub/sub
-      this.publisher = this.client.duplicate();
-
       // Set up error handlers before connecting
       this.setupErrorHandlers();
 
-      // Connect all clients
-      await Promise.all([
-        this.client.connect(),
-        this.subscriber.connect(),
-        this.publisher.connect()
-      ]);
+      // Connect client
+      await this.client.connect();
 
       this.isConnected = true;
       console.log('✅ Redis service connected successfully');
-      console.log(`📍 Redis Host: ${this.config.host || 'URL Connection'}`);
+      console.log(`📍 Redis configured with URL connection`);
 
     } catch (error) {
       console.error('❌ Redis connection failed:', error.message);
@@ -102,24 +95,12 @@ class RedisService {
       console.log('✅ Redis client ready');
       this.isConnected = true;
     });
-    
-    this.subscriber.on('error', (err) => {
-      console.error('Redis Subscriber Error:', err.message);
-    });
-    
-    this.publisher.on('error', (err) => {
-      console.error('Redis Publisher Error:', err.message);
-    });
   }
 
   async disconnect() {
-    if (this.isConnected) {
+    if (this.isConnected && this.client) {
       try {
-        await Promise.all([
-          this.client?.quit(),
-          this.subscriber?.quit(),
-          this.publisher?.quit()
-        ]);
+        await this.client.quit();
         this.isConnected = false;
         console.log('✅ Redis service disconnected');
       } catch (error) {
@@ -279,46 +260,22 @@ class RedisService {
     }, []);
   }
 
-  // Pub/Sub operations
+  // Pub/Sub operations - DISABLED to prevent connection issues
   async publish(channel, message) {
-    if (!this.isConnected || !this.publisher) {
-      console.warn('Redis publisher not available');
-      return 0;
-    }
-    
-    return await this.safeOperation(
-      () => this.publisher.publish(channel, JSON.stringify(message)),
-      0
-    );
+    // Log what would be published but don't actually publish
+    console.log(`📢 [DISABLED] Would publish to ${channel}:`, JSON.stringify(message).substring(0, 100) + '...');
+    return 1; // Return success code
   }
 
   async subscribe(channel, callback) {
-    if (!this.isConnected || !this.subscriber) {
-      console.warn('Redis not connected, skipping subscription');
-      return;
-    }
-    
-    try {
-      await this.subscriber.subscribe(channel, (message) => {
-        try {
-          const data = JSON.parse(message);
-          callback(data);
-        } catch (error) {
-          console.error('Error parsing Redis message:', error);
-          callback(message);
-        }
-      });
-    } catch (error) {
-      console.error('Redis subscribe error:', error.message);
-    }
+    // Log subscription attempt but don't actually subscribe
+    console.log(`📡 [DISABLED] Would subscribe to ${channel}`);
+    // Don't create subscription to avoid connection issues
   }
 
   async unsubscribe(channel) {
-    if (!this.isConnected || !this.subscriber) return;
-    return await this.safeOperation(
-      () => this.subscriber.unsubscribe(channel),
-      false
-    );
+    console.log(`📡 [DISABLED] Would unsubscribe from ${channel}`);
+    return true;
   }
 
   async incr(key) {

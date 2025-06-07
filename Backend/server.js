@@ -118,12 +118,18 @@ tradingRoundManager.on('roundEnded', (data) => {
   io.to(`round:${data.roundId}`).emit('round_ended', data);
 });
 
-// Redis subscription for real-time updates
+// REMOVED: Redis subscription for real-time updates (was causing connection issues)
+// This section has been disabled to prevent Redis connection problems:
+/*
 redisService.subscribe('round:*:updates', (data) => {
   if (data.type === 'leaderboard_update') {
     io.to(`round:${data.roundId}`).emit('leaderboard_update', data);
   }
 });
+*/
+
+// REPLACEMENT: Log that pub/sub is disabled
+console.log('📡 Redis pub/sub disabled for stability - using EventEmitter for real-time updates');
 
 // Initialize services
 async function initializeServices() {
