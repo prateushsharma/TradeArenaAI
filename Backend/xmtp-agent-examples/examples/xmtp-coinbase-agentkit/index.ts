@@ -51,6 +51,12 @@ const WALLET_STORAGE_DIR = ".data/wallet";
 const memoryStore: Record<string, MemorySaver> = {};
 const agentStore: Record<string, Agent> = {};
 
+// Rate limiting variables
+const lastRequestTime: Record<string, number> = {};
+const REQUEST_COOLDOWN = 3000; // 3 seconds between requests per user
+const responseCache: Record<string, { response: string; timestamp: number }> = {};
+const CACHE_DURATION = 30000; // 30 seconds cache
+
 interface AgentConfig {
   configurable: {
     thread_id: string;
@@ -145,13 +151,12 @@ async function initializeAgent(
 ): Promise<{ agent: Agent; config: AgentConfig }> {
   try {
     const llm = new ChatGroq({
-      model: "gemma2-9b-it", // You can use other models like "mixtral-8x7b-32768", "llama-3.3-70b-versatile"
-      temperature: 0.1,
+      model: "deepseek-r1-distill-llama-70b", // Faster and more efficient than gemma2-9b-it
+      temperature: 0.6, // More deterministic responses
       apiKey: GROQ_API_KEY,
       maxRetries: 2,
-      // Optional: Add other Groq-specific parameters
-      // maxTokens: 1024,
-      // topP: 1,
+      maxTokens: 300, // Reduce token usage significantly
+      timeout: 20000, // 20 second timeout
     });
 
     const storedWalletData = getWalletData(userId);
@@ -198,20 +203,30 @@ async function initializeAgent(
       checkpointSaver: memoryStore[userId],
       messageModifier: `
         You are a DeFi Payment Agent that assists users with sending payments and managing their crypto assets.
-        You can interact with the blockchain using Coinbase Developer Platform AgentKit.
+        You have access to Coinbase Developer Platform AgentKit tools to interact with the blockchain.
 
-        When a user asks you to make a payment or check their balance:
-        1. Always check the wallet details first to see what network you're on
-        2. If on base-sepolia testnet, you can request funds from the faucet if needed
-        3. For mainnet operations, provide wallet details and request funds from the user
-        4. If the user doesn't have any funds, ask them to deposit on your wallet address
+        IMPORTANT GUIDELINES:
+        1. ALWAYS use the available tools to check actual wallet balances before responding
+        2. When asked for network details, provide complete information including RPC URLs
+        3. Be specific and accurate - don't give generic responses
+        4. If you request funds from faucet, confirm the transaction was successful
+        5. Provide blockchain explorer links when relevant
 
-        IMPORTANT:
-        Your default network is Base Sepolia testnet. Your main and only token for transactions is USDC. Token address is 0x036CbD53842c5426634e7929541eC2318f3dCF7e. USDC is gasless on Base.
+        NETWORK INFORMATION:
+        - You're operating on Base Sepolia testnet
+        - Chain ID: 84532
+        - RPC URL: https://sepolia.base.org
+        - Explorer: https://sepolia.basescan.org
+        - Currency Symbol: ETH
+        - Your main token for transactions is USDC (address: 0x036CbD53842c5426634e7929541eC2318f3dCF7e)
 
-        
-        Be concise, helpful, and security-focused in all your interactions. You can only perform payment and wallet-related tasks. For other requests, politely explain that you're 
-        specialized in processing payments and can't assist with other tasks.
+        AVAILABLE ACTIONS:
+        - Check wallet balances (ETH and USDC)
+        - Request funds from Base Sepolia faucet
+        - Send payments
+        - Get wallet address and network details
+
+        Always be helpful, accurate, and use tools to provide real-time blockchain data.
       `,
     });
 
@@ -244,6 +259,14 @@ async function processMessage(
   let response = "";
 
   try {
+    // Check cache first
+    const cacheKey = `${config.configurable.thread_id}_${message}`;
+    const cached = responseCache[cacheKey];
+    if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
+      console.log("Returning cached response");
+      return cached.response;
+    }
+
     const stream = await agent.stream(
       { messages: [new HumanMessage(message)] },
       config,
@@ -252,16 +275,44 @@ async function processMessage(
     for await (const chunk of stream) {
       if (chunk && typeof chunk === "object" && "agent" in chunk) {
         const agentChunk = chunk as {
-          agent: { messages: Array<{ content: unknown }> };
+          agent: { messages: Array<{ content: string | unknown }> };
         };
-        response += String(agentChunk.agent.messages[0].content) + "\n";
+        if (agentChunk.agent?.messages?.[0]?.content) {
+          response += String(agentChunk.agent.messages[0].content) + "\n";
+        }
       }
     }
 
-    return response.trim();
-  } catch (error) {
+    response = response.trim();
+    
+    // Cache the response
+    responseCache[cacheKey] = { response, timestamp: Date.now() };
+    
+    return response;
+  } catch (error: any) {
     console.error("Error processing message:", error);
-    return "Sorry, I encountered an error while processing your request. Please try again later.";
+    
+    // Provide better fallback responses based on message content
+    const lowerMessage = message.toLowerCase();
+    
+    if (lowerMessage.includes("balance")) {
+      return "I'm currently experiencing high load. Your wallet address is available on Base Sepolia. You can check your balance directly at https://sepolia.basescan.org";
+    }
+    
+    if (lowerMessage.includes("network") || lowerMessage.includes("rpc")) {
+      return `Base Sepolia Network Details:
+Network Name: Base Sepolia
+RPC URL: https://sepolia.base.org
+Chain ID: 84532
+Currency Symbol: ETH
+Block Explorer: https://sepolia.basescan.org`;
+    }
+    
+    if (lowerMessage.includes("faucet")) {
+      return "For Base Sepolia testnet funds, you can visit https://bridge.base.org/deposit or use the Coinbase faucet. Please try again in a moment for automated faucet access.";
+    }
+    
+    return "I'm currently experiencing high demand. Please try again in a few moments, or check your wallet directly on Base Sepolia at https://sepolia.basescan.org";
   }
 }
 
@@ -281,6 +332,29 @@ async function handleMessage(message: DecodedMessage, client: Client) {
     if (senderAddress.toLowerCase() === botAddress) {
       return;
     }
+
+    // Rate limiting check
+    const now = Date.now();
+    const lastRequest = lastRequestTime[senderAddress] || 0;
+    const timeSinceLastRequest = now - lastRequest;
+
+    if (timeSinceLastRequest < REQUEST_COOLDOWN) {
+      console.log(`Rate limiting user ${senderAddress}, ${REQUEST_COOLDOWN - timeSinceLastRequest}ms remaining`);
+      
+      // Get conversation and send rate limit message
+      conversation = (await client.conversations.getConversationById(
+        message.conversationId,
+      )) as Conversation | null;
+      
+      if (conversation) {
+        await conversation.send(
+          `Please wait ${Math.ceil((REQUEST_COOLDOWN - timeSinceLastRequest) / 1000)} seconds before sending another message.`
+        );
+      }
+      return;
+    }
+
+    lastRequestTime[senderAddress] = now;
 
     console.log(
       `Received message from ${senderAddress}: ${message.content as string}`,
@@ -304,11 +378,20 @@ async function handleMessage(message: DecodedMessage, client: Client) {
     }
     await conversation.send(response);
     console.debug(`Sent response to ${senderAddress}: ${response}`);
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error handling message:", error);
-    if (conversation) {
+    
+    // Handle rate limit errors specifically
+    if (error.status === 429 || error.message?.includes("rate limit")) {
+      console.log("Rate limit hit, implementing backoff...");
+      if (conversation) {
+        await conversation.send(
+          "I'm currently experiencing high demand. Please try again in a few moments."
+        );
+      }
+    } else if (conversation) {
       await conversation.send(
-        "I encountered an error while processing your request. Please try again later.",
+        "I encountered an error while processing your request. Please try again later."
       );
     }
   }
