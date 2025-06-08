@@ -17,7 +17,7 @@ import {
 import { HumanMessage } from "@langchain/core/messages";
 import { MemorySaver } from "@langchain/langgraph";
 import { createReactAgent } from "@langchain/langgraph/prebuilt";
-import { ChatOpenAI } from "@langchain/openai";
+import { ChatGroq } from "@langchain/groq";
 import {
   Client,
   type Conversation,
@@ -32,6 +32,7 @@ const {
   CDP_API_KEY_NAME,
   CDP_API_KEY_PRIVATE_KEY,
   NETWORK_ID,
+  GROQ_API_KEY,
 } = validateEnvironment([
   "WALLET_KEY",
   "ENCRYPTION_KEY",
@@ -39,6 +40,7 @@ const {
   "CDP_API_KEY_NAME",
   "CDP_API_KEY_PRIVATE_KEY",
   "NETWORK_ID",
+  "GROQ_API_KEY",
 ]);
 
 // Storage constants
@@ -104,6 +106,7 @@ function getWalletData(userId: string): string | null {
   }
   return null;
 }
+
 /**
  * Initialize the XMTP client.
  *
@@ -132,7 +135,7 @@ async function initializeXmtpClient() {
 }
 
 /**
- * Initialize the agent with CDP Agentkit.
+ * Initialize the agent with CDP Agentkit and Groq.
  *
  * @param userId - The unique identifier for the user
  * @returns The initialized agent and its configuration
@@ -141,8 +144,14 @@ async function initializeAgent(
   userId: string,
 ): Promise<{ agent: Agent; config: AgentConfig }> {
   try {
-    const llm = new ChatOpenAI({
-      model: "gpt-4.1-mini",
+    const llm = new ChatGroq({
+      model: "gemma2-9b-it", // You can use other models like "mixtral-8x7b-32768", "llama-3.3-70b-versatile"
+      temperature: 0.1,
+      apiKey: GROQ_API_KEY,
+      maxRetries: 2,
+      // Optional: Add other Groq-specific parameters
+      // maxTokens: 1024,
+      // topP: 1,
     });
 
     const storedWalletData = getWalletData(userId);
@@ -324,7 +333,7 @@ async function startMessageListener(client: Client) {
  * Main function to start the chatbot.
  */
 async function main(): Promise<void> {
-  console.log("Initializing Agent on XMTP...");
+  console.log("Initializing Agent on XMTP with Groq...");
 
   ensureLocalStorage();
 
