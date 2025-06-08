@@ -1,27 +1,32 @@
 {
-  "name": "xmtp-agent",
+  "name": "trading-agent-xmtp",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Trading Agent with XMTP messaging and Coinbase CDP integration",
+  "private": true,
+  "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "ts-node src/index.ts",
-    "start": "node dist/index.ts"
+    "build": "tsc",
+    "dev": "tsx --watch index.ts",
+    "start": "tsx index.ts",
+    "gen:keys": "tsx scripts/generateKeys.ts"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
-    "@xmtp/xmtp-js": "^13.0.4",
-    "axios": "^1.9.0",
-    "dotenv": "^16.5.0",
+    "@coinbase/agentkit": "^0.6.2",
+    "@coinbase/agentkit-langchain": "^0.3.0",
+    "@langchain/core": "^0.3.19",
+    "@langchain/langgraph": "^0.2.21",
+    "@langchain/openai": "^0.3.14",
+    "@xmtp/node-sdk": "^0.0.24",
+    "axios": "^1.6.2",
+    "dotenv": "^16.3.1",
     "ethers": "^5.8.0"
   },
   "devDependencies": {
-    "@types/node": "^22.15.30",
-    "nodemon": "^3.1.10",
-    "ts-node": "^10.9.2",
-    "typescript": "^5.8.3"
+    "@types/node": "^20.9.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.2"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
