@@ -4,7 +4,7 @@ const router = express.Router();
 const tradingRoundManager = require('../services/tradingRoundManager');
 const strategyManager = require('../services/strategyManager');
 const redisService = require('../services/redisService');
-
+const groqService = require('../services/groqService');
 // Create a new trading round
 router.post('/create-round', async (req, res) => {
   try {
@@ -38,7 +38,269 @@ router.post('/create-round', async (req, res) => {
     });
   }
 });
+// Add these routes to your existing routes/game.js file
 
+// AI-Powered Game Creation
+router.post('/create-game-from-prompt', async (req, res) => {
+  try {
+    const { 
+      query, 
+      maxParticipants = 10,
+      minParticipants = 2,
+      duration = 180,
+      startingBalance = 10000,
+      executionInterval = 15,
+      autoStart = true,
+      createdBy = 'ai-prompt'
+    } = req.body;
+    
+    if (!query) {
+      return res.status(400).json({
+        success: false,
+        error: 'Query prompt is required'
+      });
+    }
+
+    console.log(`🤖 Processing AI game creation prompt: "${query}"`);
+    
+    // Parse the prompt with AI to extract game configuration
+    const gameConfig = await parseGamePrompt(query);
+    
+    // Create the trading round with extracted configuration
+    const roundConfig = {
+      title: gameConfig.title || generateGameTitle(gameConfig),
+      description: gameConfig.description || `AI-generated game: ${query.slice(0, 100)}...`,
+      duration: (gameConfig.duration || duration) * 1000, // Convert to milliseconds
+      startingBalance: gameConfig.startingBalance || startingBalance,
+      maxParticipants,
+      minParticipants,
+      executionInterval: (gameConfig.executionInterval || executionInterval) * 1000,
+      allowedTokens: gameConfig.tokens || ['ETH', 'TOSHI', 'DEGEN'],
+      autoStart,
+      createdBy,
+      // Add AI-specific metadata
+      aiGenerated: true,
+      originalPrompt: query,
+      aiConfig: gameConfig
+    };
+
+    const round = await tradingRoundManager.createRound(roundConfig);
+    
+    res.json({
+      success: true,
+      round,
+      aiConfig: gameConfig,
+      suggestedStrategy: gameConfig.strategy,
+      extractedData: {
+        tokens: gameConfig.tokens,
+        targetProfit: gameConfig.targetProfit,
+        riskLevel: gameConfig.riskLevel,
+        gameType: gameConfig.gameType
+      },
+      message: 'AI-powered game created successfully'
+    });
+
+  } catch (error) {
+    console.error('AI game creation error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to create AI-powered game',
+      message: error.message
+    });
+  }
+});
+
+// Quick game templates
+router.post('/get-game-templates', (req, res) => {
+  const templates = [
+    {
+      id: 'trending-hunt',
+      title: 'Trending Token Hunt',
+      prompt: 'Create a 5-minute game to trade trending Base tokens with 10% profit target',
+      description: 'Fast-paced trading of trending tokens',
+      duration: 300,
+      targetProfit: 10,
+      riskLevel: 'high'
+    },
+    {
+      id: 'stable-growth',
+      title: 'Stable Growth Challenge',
+      prompt: 'Create a 30-minute game focusing on ETH and major tokens with 5% profit target',
+      description: 'Conservative trading with major tokens',
+      duration: 1800,
+      targetProfit: 5,
+      riskLevel: 'low'
+    },
+    {
+      id: 'defi-momentum',
+      title: 'DeFi Momentum Play',
+      prompt: 'Create a 15-minute game trading AERO, UNI, COMP with momentum strategy',
+      description: 'DeFi token momentum trading',
+      duration: 900,
+      targetProfit: 7,
+      riskLevel: 'medium'
+    },
+    {
+      id: 'meme-madness',
+      title: 'Meme Token Madness',
+      prompt: 'Create a 10-minute game with TOSHI, DEGEN, BRETT for quick profits',
+      description: 'High volatility meme token trading',
+      duration: 600,
+      targetProfit: 15,
+      riskLevel: 'high'
+    }
+  ];
+
+  res.json({
+    success: true,
+    templates,
+    count: templates.length
+  });
+});
+
+// Suggest strategy from prompt
+router.post('/suggest-strategy-from-prompt', async (req, res) => {
+  try {
+    const { query } = req.body;
+    
+    if (!query) {
+      return res.status(400).json({
+        success: false,
+        error: 'Query is required'
+      });
+    }
+
+    const strategyPrompt = `
+Based on this request, create a simple trading strategy:
+
+Request: "${query}"
+
+Create a strategy that matches the user's intent. Return just the strategy text (2-3 sentences max).
+Focus on Base network tokens and clear rules.
+
+Example: "Buy TOSHI when volume increases by 20%, sell when profit reaches 5% or loss hits 2%"
+`;
+
+    const strategy = await groqService.makeGroqRequest(async () => {
+      const completion = await groqService.client.chat.completions.create({
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a trading strategy advisor. Provide concise, actionable strategies.'
+          },
+          {
+            role: 'user',
+            content: strategyPrompt
+          }
+        ],
+        model: 'llama-3.1-8b-instant',
+        temperature: 0.3,
+        max_tokens: 200
+      });
+
+      return completion.choices[0]?.message?.content;
+    });
+
+    res.json({
+      success: true,
+      strategy: strategy.replace(/"/g, '').trim(),
+      prompt: query
+    });
+
+  } catch (error) {
+    console.error('Strategy suggestion error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to suggest strategy',
+      fallbackStrategy: "Buy trending tokens when volume increases, sell on 5-10% profit with 2% stop loss"
+    });
+  }
+});
+
+// Helper functions (add these at the end of the file)
+
+// AI Prompt Parser Function
+async function parseGamePrompt(query) {
+  const prompt = `
+Parse this game creation request and extract configuration:
+
+User Request: "${query}"
+
+Return ONLY this JSON format:
+{
+  "title": "extracted game title",
+  "description": "game description", 
+  "tokens": ["token1", "token2"],
+  "duration": 180,
+  "startingBalance": 10000,
+  "executionInterval": 15,
+  "strategy": "suggested trading strategy",
+  "gameType": "trending/momentum/arbitrage/prediction",
+  "targetProfit": 5,
+  "riskLevel": "low/medium/high",
+  "timeframe": "5m/15m/1h",
+  "focus": "specific focus area"
+}
+
+Extract values from the request. Use these defaults if not mentioned:
+- duration: 180 seconds
+- startingBalance: 10000  
+- tokens: ["ETH", "TOSHI", "DEGEN"]
+- targetProfit: 5
+- riskLevel: "medium"
+`;
+
+  try {
+    const response = await groqService.makeGroqRequest(async () => {
+      const completion = await groqService.client.chat.completions.create({
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a game configuration parser. Always respond with valid JSON only.'
+          },
+          {
+            role: 'user', 
+            content: prompt
+          }
+        ],
+        model: 'llama-3.1-8b-instant',
+        temperature: 0.1,
+        max_tokens: 800
+      });
+
+      return completion.choices[0]?.message?.content;
+    });
+
+    return groqService.cleanAndParseJSON(response);
+  } catch (error) {
+    console.error('Prompt parsing error:', error);
+    // Return default config if AI fails
+    return {
+      title: "AI Trading Game",
+      description: "Generated from user prompt",
+      tokens: ["ETH", "TOSHI", "DEGEN"],
+      duration: 180,
+      startingBalance: 10000,
+      strategy: "Buy trending tokens and sell on profit",
+      gameType: "trending",
+      targetProfit: 5,
+      riskLevel: "medium"
+    };
+  }
+}
+
+// Generate game title from configuration
+function generateGameTitle(config) {
+  const templates = [
+    `${config.gameType?.charAt(0).toUpperCase() + config.gameType?.slice(1) || 'Trading'} Challenge`,
+    `${config.targetProfit || 5}% Profit Hunt`,
+    `${config.riskLevel?.charAt(0).toUpperCase() + config.riskLevel?.slice(1) || 'Medium'} Risk Battle`,
+    `${config.tokens?.[0] || 'Multi-Token'} Trading Arena`,
+    `AI ${config.focus || 'Strategy'} Game`
+  ];
+  
+  return templates[Math.floor(Math.random() * templates.length)];
+}
 // Join a trading round with strategy options
 router.post('/join-round', async (req, res) => {
   try {
@@ -617,5 +879,274 @@ router.post('/can-join', async (req, res) => {
     });
   }
 });
+// ========== ADD THESE TO YOUR EXISTING routes/game.js FILE ==========
+// Add before the "module.exports = router;" line
+
+// AI-Powered Game Creation
+router.post('/create-game-from-prompt', async (req, res) => {
+  try {
+    const { 
+      query, 
+      maxParticipants = 10,
+      minParticipants = 2,
+      duration = 180,
+      startingBalance = 10000,
+      executionInterval = 15,
+      autoStart = true,
+      createdBy = 'ai-prompt'
+    } = req.body;
+    
+    if (!query) {
+      return res.status(400).json({
+        success: false,
+        error: 'Query prompt is required'
+      });
+    }
+
+    console.log(`🤖 Processing AI game creation prompt: "${query}"`);
+    
+    // Parse the prompt with AI to extract game configuration
+    const gameConfig = await parseGamePrompt(query);
+    
+    // Create the trading round with extracted configuration
+    const roundConfig = {
+      title: gameConfig.title || generateGameTitle(gameConfig),
+      description: gameConfig.description || `AI-generated game: ${query.slice(0, 100)}...`,
+      duration: (gameConfig.duration || duration) * 1000, // Convert to milliseconds
+      startingBalance: gameConfig.startingBalance || startingBalance,
+      maxParticipants,
+      minParticipants,
+      executionInterval: (gameConfig.executionInterval || executionInterval) * 1000,
+      allowedTokens: gameConfig.tokens || ['ETH', 'TOSHI', 'DEGEN'],
+      autoStart,
+      createdBy,
+      // Add AI-specific metadata
+      aiGenerated: true,
+      originalPrompt: query,
+      aiConfig: gameConfig
+    };
+
+    const round = await tradingRoundManager.createRound(roundConfig);
+    
+    res.json({
+      success: true,
+      round,
+      aiConfig: gameConfig,
+      suggestedStrategy: gameConfig.strategy,
+      extractedData: {
+        tokens: gameConfig.tokens,
+        targetProfit: gameConfig.targetProfit,
+        riskLevel: gameConfig.riskLevel,
+        gameType: gameConfig.gameType
+      },
+      message: 'AI-powered game created successfully'
+    });
+
+  } catch (error) {
+    console.error('AI game creation error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to create AI-powered game',
+      message: error.message
+    });
+  }
+});
+
+// Get game templates
+router.post('/get-game-templates', (req, res) => {
+  const templates = [
+    {
+      id: 'trending-hunt',
+      title: 'Trending Token Hunt',
+      prompt: 'Create a 5-minute game to trade trending Base tokens with 10% profit target',
+      description: 'Fast-paced trading of trending tokens',
+      duration: 300,
+      targetProfit: 10,
+      riskLevel: 'high'
+    },
+    {
+      id: 'stable-growth',
+      title: 'Stable Growth Challenge',
+      prompt: 'Create a 30-minute game focusing on ETH and major tokens with 5% profit target',
+      description: 'Conservative trading with major tokens',
+      duration: 1800,
+      targetProfit: 5,
+      riskLevel: 'low'
+    },
+    {
+      id: 'defi-momentum',
+      title: 'DeFi Momentum Play',
+      prompt: 'Create a 15-minute game trading AERO, UNI, COMP with momentum strategy',
+      description: 'DeFi token momentum trading',
+      duration: 900,
+      targetProfit: 7,
+      riskLevel: 'medium'
+    },
+    {
+      id: 'meme-madness',
+      title: 'Meme Token Madness',
+      prompt: 'Create a 10-minute game with TOSHI, DEGEN, BRETT for quick profits',
+      description: 'High volatility meme token trading',
+      duration: 600,
+      targetProfit: 15,
+      riskLevel: 'high'
+    }
+  ];
+
+  res.json({
+    success: true,
+    templates,
+    count: templates.length
+  });
+});
+
+// Suggest strategy from prompt
+router.post('/suggest-strategy-from-prompt', async (req, res) => {
+  try {
+    const { query } = req.body;
+    
+    if (!query) {
+      return res.status(400).json({
+        success: false,
+        error: 'Query is required'
+      });
+    }
+
+    const strategyPrompt = `
+Based on this request, create a simple trading strategy:
+
+Request: "${query}"
+
+Create a strategy that matches the user's intent. Return just the strategy text (2-3 sentences max).
+Focus on Base network tokens and clear rules.
+
+Example: "Buy TOSHI when volume increases by 20%, sell when profit reaches 5% or loss hits 2%"
+`;
+
+    const strategy = await groqService.makeGroqRequest(async () => {
+      const completion = await groqService.client.chat.completions.create({
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a trading strategy advisor. Provide concise, actionable strategies.'
+          },
+          {
+            role: 'user',
+            content: strategyPrompt
+          }
+        ],
+        model: 'llama-3.1-8b-instant',
+        temperature: 0.3,
+        max_tokens: 200
+      });
+
+      return completion.choices[0]?.message?.content;
+    });
+
+    res.json({
+      success: true,
+      strategy: strategy.replace(/"/g, '').trim(),
+      prompt: query
+    });
+
+  } catch (error) {
+    console.error('Strategy suggestion error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to suggest strategy',
+      fallbackStrategy: "Buy trending tokens when volume increases, sell on 5-10% profit with 2% stop loss"
+    });
+  }
+});
+
+// ========== HELPER FUNCTIONS ==========
+// Add these helper functions at the end, before module.exports
+
+// AI Prompt Parser Function
+async function parseGamePrompt(query) {
+  // Import groq service at the top of file if not already imported
+  const groqService = require('../services/groqService');
+  
+  const prompt = `
+Parse this game creation request and extract configuration:
+
+User Request: "${query}"
+
+Return ONLY this JSON format:
+{
+  "title": "extracted game title",
+  "description": "game description", 
+  "tokens": ["token1", "token2"],
+  "duration": 180,
+  "startingBalance": 10000,
+  "executionInterval": 15,
+  "strategy": "suggested trading strategy",
+  "gameType": "trending/momentum/arbitrage/prediction",
+  "targetProfit": 5,
+  "riskLevel": "low/medium/high",
+  "timeframe": "5m/15m/1h",
+  "focus": "specific focus area"
+}
+
+Extract values from the request. Use these defaults if not mentioned:
+- duration: 180 seconds
+- startingBalance: 10000  
+- tokens: ["ETH", "TOSHI", "DEGEN"]
+- targetProfit: 5
+- riskLevel: "medium"
+`;
+
+  try {
+    const response = await groqService.makeGroqRequest(async () => {
+      const completion = await groqService.client.chat.completions.create({
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a game configuration parser. Always respond with valid JSON only.'
+          },
+          {
+            role: 'user', 
+            content: prompt
+          }
+        ],
+        model: 'llama-3.1-8b-instant',
+        temperature: 0.1,
+        max_tokens: 800
+      });
+
+      return completion.choices[0]?.message?.content;
+    });
+
+    return groqService.cleanAndParseJSON(response);
+  } catch (error) {
+    console.error('Prompt parsing error:', error);
+    // Return default config if AI fails
+    return {
+      title: "AI Trading Game",
+      description: "Generated from user prompt",
+      tokens: ["ETH", "TOSHI", "DEGEN"],
+      duration: 180,
+      startingBalance: 10000,
+      strategy: "Buy trending tokens and sell on profit",
+      gameType: "trending",
+      targetProfit: 5,
+      riskLevel: "medium"
+    };
+  }
+}
+
+// Generate game title from configuration
+function generateGameTitle(config) {
+  const templates = [
+    `${config.gameType?.charAt(0).toUpperCase() + config.gameType?.slice(1) || 'Trading'} Challenge`,
+    `${config.targetProfit || 5}% Profit Hunt`,
+    `${config.riskLevel?.charAt(0).toUpperCase() + config.riskLevel?.slice(1) || 'Medium'} Risk Battle`,
+    `${config.tokens?.[0] || 'Multi-Token'} Trading Arena`,
+    `AI ${config.focus || 'Strategy'} Game`
+  ];
+  
+  return templates[Math.floor(Math.random() * templates.length)];
+}
+
 
 module.exports = router;
